@@ -256,32 +256,33 @@ def build_ram_tab(parent):
     ram_var = tk.StringVar()
     commit_var = tk.StringVar()
     warn_var = tk.StringVar()
-    tk.Label(parent, textvariable=ram_var, font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-    tk.Label(parent, textvariable=commit_var).grid(row=1, column=0, columnspan=4, sticky="w", **pad)
-    tk.Label(parent, textvariable=warn_var, fg="#c0392b").grid(row=2, column=0, columnspan=4, sticky="w", **pad)
+    ttk.Label(parent, textvariable=ram_var, style="Big.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", **pad)
+    ttk.Label(parent, textvariable=commit_var, style="Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", **pad)
+    ttk.Label(parent, textvariable=warn_var, style="Warn.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", **pad)
 
     cols = ("name", "ram", "commit", "grow")
-    tree = ttk.Treeview(parent, columns=cols, show="headings", height=6)
+    tree = ttk.Treeview(parent, columns=cols, show="headings", height=8)
     for c, t, w in zip(cols, ("Процесс", "В ОЗУ", "Выделено", "Рост за 10 мин"), (170, 80, 95, 125)):
         tree.heading(c, text=t)
         tree.column(c, width=w, anchor="w" if c == "name" else "e")
-    tree.grid(row=3, column=0, columnspan=4, **pad)
+    tree.grid(row=3, column=0, columnspan=4, sticky="ew", **pad)
+    tree.tag_configure("odd", background="#19191e")
 
-    tk.Label(parent, text="Процессы игры:").grid(row=4, column=0, sticky="w", **pad)
+    ttk.Label(parent, text="Процессы игры:").grid(row=4, column=0, sticky="w", **pad)
     names_var = tk.StringVar(value=cfg["names"])
-    tk.Entry(parent, textvariable=names_var, width=40).grid(row=4, column=1, columnspan=3, sticky="w", **pad)
+    ttk.Entry(parent, textvariable=names_var, width=40).grid(row=4, column=1, columnspan=3, sticky="w", **pad)
 
     auto_var = tk.BooleanVar(value=cfg["auto"])
     thr_var = tk.IntVar(value=cfg["threshold"])
     int_var = tk.IntVar(value=cfg["min_interval"])
     standby_var = tk.BooleanVar(value=cfg["standby"])
-    row = tk.Frame(parent)
+    row = ttk.Frame(parent)
     row.grid(row=5, column=0, columnspan=4, sticky="w", **pad)
     ttk.Checkbutton(row, text="Авто: когда ОЗУ занято больше", variable=auto_var).pack(side="left")
-    tk.Spinbox(row, from_=50, to=98, width=4, textvariable=thr_var).pack(side="left")
-    tk.Label(row, text="%, не чаще раза в").pack(side="left")
-    tk.Spinbox(row, from_=1, to=60, width=4, textvariable=int_var).pack(side="left")
-    tk.Label(row, text="мин").pack(side="left")
+    ttk.Spinbox(row, from_=50, to=98, width=4, textvariable=thr_var).pack(side="left", padx=4)
+    ttk.Label(row, text="%, не чаще раза в").pack(side="left")
+    ttk.Spinbox(row, from_=1, to=60, width=4, textvariable=int_var).pack(side="left", padx=4)
+    ttk.Label(row, text="мин").pack(side="left")
     ttk.Checkbutton(parent, text="Чистить ещё и кэш Windows (нужен запуск от администратора)",
                     variable=standby_var).grid(row=6, column=0, columnspan=4, sticky="w", **pad)
 
@@ -302,10 +303,10 @@ def build_ram_tab(parent):
             busy["on"] = False
         threading.Thread(target=work, daemon=True).start()
 
-    ttk.Button(parent, text="Очистить сейчас", command=lambda: do_clean("вручную")).grid(
+    ttk.Button(parent, text="Очистить сейчас", style="Accent.TButton", command=lambda: do_clean("вручную")).grid(
         row=7, column=0, columnspan=4, sticky="ew", **pad)
 
-    logbox = tk.Text(parent, height=7, width=62, state="disabled", font=("Consolas", 9))
+    logbox = tk.Text(parent, height=8, width=70, state="disabled", font=("Consolas", 9))
     logbox.grid(row=8, column=0, columnspan=4, **pad)
 
     history = {}   # pid -> [(время, выделено)]
@@ -341,7 +342,8 @@ def build_ram_tab(parent):
                     h.pop(0)
                 grow = private - h[0][1] if len(h) > 1 else 0
                 grow_txt = ("+" if grow >= 0 else "") + mb(grow) if now - h[0][0] > 30 else "..."
-                tree.insert("", "end", values=(f"{name} ({pid})", mb(ws), mb(private), grow_txt))
+                tree.insert("", "end", values=(f"{name} ({pid})", mb(ws), mb(private), grow_txt),
+                            tags=("odd",) if len(tree.get_children()) % 2 else ())
             for pid in list(history):
                 if pid not in alive:
                     del history[pid]
@@ -386,6 +388,11 @@ def run_gui():
     root = tk.Tk()
     root.title("Чистильщик ОЗУ для Majestic")
     root.resizable(False, False)
+    try:
+        import theme
+        theme.apply(root)
+    except Exception:
+        pass
     stop = build_ram_tab(root)
     root.mainloop()
     stop()

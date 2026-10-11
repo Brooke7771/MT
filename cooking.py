@@ -230,9 +230,9 @@ def build_cooking_tab(parent):
     ttk.Label(row1, text="Поиск:").pack(side="left")
     ttk.Entry(row1, textvariable=search_var, width=16).pack(side="left", padx=(2, 8))
     ttk.Label(row1, text="Мой навык:").pack(side="left")
-    tk.Spinbox(row1, from_=1, to=9, width=3, textvariable=skill_var, command=on_change).pack(side="left", padx=(2, 8))
+    ttk.Spinbox(row1, from_=1, to=9, width=3, textvariable=skill_var, command=on_change).pack(side="left", padx=(2, 8))
     ttk.Label(row1, text="Кухня:").pack(side="left")
-    tk.Spinbox(row1, from_=1, to=5, width=3, textvariable=kitchen_var, command=on_change).pack(side="left", padx=(2, 8))
+    ttk.Spinbox(row1, from_=1, to=5, width=3, textvariable=kitchen_var, command=on_change).pack(side="left", padx=(2, 8))
     ttk.Checkbutton(row1, text="Есть факультет", variable=faculty_var, command=on_change).pack(side="left", padx=(0, 8))
     ttk.Label(row1, text="Сортировка:").pack(side="left")
     cb = ttk.Combobox(row1, textvariable=sort_var, values=SORTS, state="readonly", width=14)
@@ -243,7 +243,7 @@ def build_cooking_tab(parent):
     row2 = ttk.Frame(top)
     row2.pack(fill="x", pady=(3, 0))
     ttk.Label(row2, text="Качество блюда, %:").pack(side="left")
-    tk.Spinbox(row2, from_=0, to=100, increment=5, width=4, textvariable=quality_var,
+    ttk.Spinbox(row2, from_=0, to=100, increment=5, width=4, textvariable=quality_var,
                command=on_change).pack(side="left", padx=(2, 10))
     ttk.Checkbutton(row2, text="Активный Premium (+25%)", variable=premium_var, command=on_change).pack(side="left", padx=(0, 8))
     ttk.Checkbutton(row2, text="Бонус за 100 дней Premium (+5.2%)", variable=prem100_var,
@@ -252,31 +252,32 @@ def build_cooking_tab(parent):
     # ---------------------------------------------------------------- таблица блюд
     cols = ("name", "skill", "out", "time", "exp", "price", "perh", "exph")
     heads = ("Блюдо", "Навык/кухня", "Выход", "Время", "Опыт", "Цена порции", "Доход/ч", "Опыт/ч")
-    widths = (230, 95, 55, 95, 50, 120, 75, 65)
+    widths = (230, 105, 62, 95, 58, 125, 80, 70)
     tree = ttk.Treeview(parent, columns=cols, show="headings", height=14, selectmode="browse")
     for c, h, w in zip(cols, heads, widths):
         tree.heading(c, text=h)
         tree.column(c, width=w, anchor="w" if c == "name" else "e")
     tree.grid(row=1, column=0, sticky="nsew", **pad)
+    tree.tag_configure("odd", background="#19191e")
 
     # ---------------------------------------------------------------- карточка блюда
     card = ttk.LabelFrame(parent, text="Блюдо")
     card.grid(row=1, column=1, sticky="nsew", **pad)
     title_var = tk.StringVar(value="Выбери блюдо в таблице")
-    ttk.Label(card, textvariable=title_var, font=("Segoe UI", 11, "bold"),
+    ttk.Label(card, textvariable=title_var, font=("Segoe UI", 13, "bold"),
               wraplength=360).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
     info_var = tk.StringVar()
-    ttk.Label(card, textvariable=info_var, wraplength=360, justify="left").grid(
+    ttk.Label(card, textvariable=info_var, wraplength=360, justify="left", style="Muted.TLabel").grid(
         row=1, column=0, columnspan=4, sticky="w", **pad)
 
     runs_var = tk.IntVar(value=1)
     batch_var = tk.StringVar(value=BATCH_NAMES[1])
     accel_var = tk.IntVar(value=0)
     ttk.Label(card, text="Загрузок подряд:").grid(row=2, column=0, sticky="w", **pad)
-    tk.Spinbox(card, from_=1, to=99, width=4, textvariable=runs_var,
+    ttk.Spinbox(card, from_=1, to=99, width=4, textvariable=runs_var,
                command=lambda: show_detail()).grid(row=2, column=1, sticky="w", **pad)
     ttk.Label(card, text="Ускорителей:").grid(row=2, column=2, sticky="e", **pad)
-    accel_spin = tk.Spinbox(card, from_=0, to=50, width=4, textvariable=accel_var,
+    accel_spin = ttk.Spinbox(card, from_=0, to=50, width=4, textvariable=accel_var,
                             command=lambda: show_detail())
     accel_spin.grid(row=2, column=3, sticky="w", **pad)
     ttk.Label(card, text="Режим:").grid(row=3, column=0, sticky="w", **pad)
@@ -291,6 +292,7 @@ def build_cooking_tab(parent):
         itree.heading(c, text=h)
         itree.column(c, width=w, anchor="w" if c in ("ing", "src") else "e")
     itree.grid(row=4, column=0, columnspan=4, sticky="ew", **pad)
+    itree.tag_configure("nocost", foreground="#8c8c99")
     cost_var = tk.StringVar()
     ttk.Label(card, text="Цена за 1 шт выбранного:").grid(row=5, column=0, columnspan=2, sticky="w", **pad)
     ttk.Entry(card, textvariable=cost_var, width=9).grid(row=5, column=2, sticky="w", **pad)
@@ -303,7 +305,7 @@ def build_cooking_tab(parent):
     label_var = tk.StringVar(value="Плита 1")
     ttk.Label(card, text="Метка:").grid(row=7, column=0, sticky="w", **pad)
     ttk.Entry(card, textvariable=label_var, width=14).grid(row=7, column=1, columnspan=2, sticky="w", **pad)
-    ttk.Button(card, text="Поставить таймер", command=lambda: add_timer_from_dish()).grid(
+    ttk.Button(card, text="Поставить таймер", style="Accent.TButton", command=lambda: add_timer_from_dish()).grid(
         row=7, column=3, sticky="e", **pad)
 
     # ---------------------------------------------------------------- таймеры
@@ -315,10 +317,11 @@ def build_cooking_tab(parent):
         ttree.heading(c, text=h)
         ttree.column(c, width=w, anchor="w")
     ttree.grid(row=0, column=0, columnspan=6, sticky="ew", **pad)
+    ttree.tag_configure("done", foreground="#3ecf6e")
     custom_name = tk.StringVar(value="Свой таймер")
     custom_min = tk.IntVar(value=60)
     ttk.Entry(tframe, textvariable=custom_name, width=18).grid(row=1, column=0, sticky="w", **pad)
-    tk.Spinbox(tframe, from_=1, to=5000, width=5, textvariable=custom_min).grid(row=1, column=1, sticky="w")
+    ttk.Spinbox(tframe, from_=1, to=5000, width=5, textvariable=custom_min).grid(row=1, column=1, sticky="w")
     ttk.Label(tframe, text="мин").grid(row=1, column=2, sticky="w")
     ttk.Button(tframe, text="Добавить", command=lambda: add_custom_timer()).grid(row=1, column=3, **pad)
     ttk.Button(tframe, text="Удалить", command=lambda: delete_timer()).grid(row=1, column=4, **pad)
@@ -338,11 +341,11 @@ def build_cooking_tab(parent):
     remind_min = tk.IntVar(value=cfg["remind_min"])
     ttk.Checkbutton(tgf, text="Напоминать за", variable=remind_var,
                     command=lambda: save_settings()).grid(row=3, column=0, sticky="w", **pad)
-    tk.Spinbox(tgf, from_=1, to=120, width=4, textvariable=remind_min,
+    ttk.Spinbox(tgf, from_=1, to=120, width=4, textvariable=remind_min,
                command=lambda: save_settings()).grid(row=3, column=1, sticky="w")
     ttk.Label(tgf, text="мин до готовности").grid(row=3, column=2, sticky="w")
     status_var = tk.StringVar()
-    ttk.Label(parent, textvariable=status_var, foreground="#555").grid(
+    ttk.Label(parent, textvariable=status_var, style="Muted.TLabel").grid(
         row=3, column=0, columnspan=2, sticky="w", **pad)
 
     # ================================================================ логика
@@ -390,7 +393,7 @@ def build_cooking_tab(parent):
             lo, hi = price(r, cfg)
             ph, eh = per_hour(r, cfg, costs)
             name = r["name"] + ("  [факультет]" if r["faculty"] else "")
-            tree.insert("", "end", iid=str(i), values=(
+            tree.insert("", "end", iid=str(i), tags=("odd",) if len(tree.get_children()) % 2 else (), values=(
                 name, f"{r['skill']} / {r['kitchen']}", f"x{r['yield']}", fmt_minutes(r["minutes"]),
                 r["exp"], f"{money(lo)}–{money(hi)}", money(ph), f"{eh:.1f}"))
         if sel is not None and tree.exists(str(sel)):
@@ -432,7 +435,7 @@ def build_cooking_tab(parent):
         sel_ing = itree.selection()
         itree.delete(*itree.get_children())
         for n, q, src, cost in c["ingredients"]:
-            itree.insert("", "end", iid=n, values=(n, f"x{q}", src or "-", "-" if cost is None else money(cost)))
+            itree.insert("", "end", iid=n, tags=("nocost",) if cost is None else (), values=(n, f"x{q}", src or "-", "-" if cost is None else money(cost)))
         for s_ in sel_ing:
             if itree.exists(s_):
                 itree.selection_set(s_)
@@ -524,14 +527,14 @@ def build_cooking_tab(parent):
             day = "" if time.localtime(t["end"]).tm_yday == time.localtime(now).tm_yday else \
                 time.strftime("%d.%m ", time.localtime(t["end"]))
             left = "Готово ✓" if t["done"] else fmt_left(t["end"] - now)
-            ttree.insert("", "end", iid=str(t["id"]), values=(
+            ttree.insert("", "end", iid=str(t["id"]), tags=("done",) if t["done"] else (), values=(
                 t["name"], t["label"], day + time.strftime("%H:%M", time.localtime(t["end"])), left))
         for s_ in sel:
             if ttree.exists(s_):
                 ttree.selection_set(s_)
 
     def notify(text, telegram=True):
-        status_var.set(time.strftime("%H:%M ") + text)
+        status_var.set(time.strftime("%H:%M ") + "".join(ch for ch in text if ord(ch) < 0x10000).strip())
         if telegram and cfg["token"] and cfg["chat_id"]:
             def work():
                 try:
@@ -631,6 +634,11 @@ if __name__ == "__main__":
     import tkinter as tk
     root = tk.Tk()
     root.title("Готовка")
+    try:
+        import theme
+        theme.apply(root)
+    except Exception:
+        pass
     stop = build_cooking_tab(root)
     root.mainloop()
     stop()

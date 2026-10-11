@@ -852,18 +852,18 @@ def build_bot_tab(parent, request_close=None):
 
     pad = {"padx": 8, "pady": 4}
     status_var = tk.StringVar(value="Пауза")
-    tk.Label(parent, textvariable=status_var, font=("Segoe UI", 14, "bold")).grid(
-        row=0, column=0, columnspan=3, **pad)
-    ttk.Button(parent, text="Старт / пауза", command=ctrl.toggle).grid(
+    status_lbl = ttk.Label(parent, textvariable=status_var, style="Status.TLabel")
+    status_lbl.grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+    ttk.Button(parent, text="Старт / пауза", style="Accent.TButton", command=ctrl.toggle).grid(
         row=1, column=0, columnspan=3, sticky="ew", **pad)
 
     key_vars = {}
 
     def key_row(row, title, attr):
-        tk.Label(parent, text=title).grid(row=row, column=0, sticky="w", **pad)
+        ttk.Label(parent, text=title).grid(row=row, column=0, sticky="w", **pad)
         var = tk.StringVar(value=vk_name(getattr(ctrl, attr)))
         key_vars[attr] = var
-        tk.Label(parent, textvariable=var, width=18, relief="groove").grid(row=row, column=1, **pad)
+        ttk.Label(parent, textvariable=var, width=18, style="Key.TLabel").grid(row=row, column=1, **pad)
         ttk.Button(parent, text="Назначить", command=lambda: start_binding(attr)).grid(
             row=row, column=2, **pad)
 
@@ -895,7 +895,7 @@ def build_bot_tab(parent, request_close=None):
     ttk.Button(parent, text="Проверочный скриншот", command=do_debug).grid(
         row=5, column=0, columnspan=3, sticky="ew", **pad)
 
-    logbox = tk.Text(parent, height=9, width=52, state="disabled", font=("Consolas", 9))
+    logbox = tk.Text(parent, height=12, width=64, state="disabled", font=("Consolas", 9))
     logbox.grid(row=6, column=0, columnspan=3, **pad)
 
     # ---- назначение клавиши: ждём, пока всё отпущено, потом первую нажатую
@@ -959,6 +959,8 @@ def build_bot_tab(parent, request_close=None):
                     logbox.configure(state="disabled")
                 elif kind == "status":
                     status_var.set(val)
+                    status_lbl.configure(style="StatusOn.TLabel" if val in ("Работает", "Шью")
+                                         else "StatusErr.TLabel" if val == "Ошибка" else "Status.TLabel")
                 elif kind == "exit":
                     if request_close:
                         request_close()
@@ -991,6 +993,11 @@ def run_gui():
     root.title("Швейный бот")
     root.resizable(False, False)
     root.attributes("-topmost", True)
+    try:
+        import theme
+        theme.apply(root)
+    except Exception:
+        pass
     stop = build_bot_tab(root, request_close=lambda: root.after(200, root.destroy))
 
     def on_close():

@@ -34,25 +34,88 @@ def fatal(text):
         print(msg)
 
 
+PAGES = [  # (ключ, значок, название, подзаголовок)
+    ("bot", "✂", "Швейный бот", "Автопрохождение мини-игры в ателье"),
+    ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память, которую держит игра"),
+    ("cook", "♨", "Готовка", "Калькулятор блюд, таймеры и уведомления в Telegram"),
+]
+
+
 def main():
     import tkinter as tk
     from tkinter import ttk, messagebox
     import updater
+    import theme as T
 
     updater.cleanup_old()
     root = tk.Tk()
     root.title(f"Majestic Tools {__version__}")
-    root.resizable(False, False)
+    root.minsize(900, 560)
+    T.apply(root)
     root.attributes("-topmost", True)
 
-    nb = ttk.Notebook(root)
-    nb.pack(fill="both", expand=True, padx=4, pady=4)
-    tab_bot = ttk.Frame(nb)
-    tab_ram = ttk.Frame(nb)
-    tab_cook = ttk.Frame(nb)
-    nb.add(tab_bot, text="Швейный бот")
-    nb.add(tab_ram, text="Чистильщик ОЗУ")
-    nb.add(tab_cook, text="Готовка")
+    # ---------------- каркас: меню слева, страница справа
+    side = tk.Frame(root, bg=T.SIDEBAR, width=232)
+    side.pack(side="left", fill="y")
+    side.pack_propagate(False)
+    tk.Frame(root, bg=T.BORDER, width=1).pack(side="left", fill="y")
+    main_area = ttk.Frame(root)
+    main_area.pack(side="left", fill="both", expand=True)
+
+    brand = tk.Frame(side, bg=T.SIDEBAR)
+    brand.pack(fill="x", padx=18, pady=(20, 22))
+    tk.Label(brand, text="MAJESTIC", bg=T.SIDEBAR, fg=T.ACCENT,
+             font=("Segoe UI", 17, "bold")).pack(anchor="w")
+    tk.Label(brand, text="TOOLS", bg=T.SIDEBAR, fg=T.TEXT,
+             font=("Segoe UI", 11, "bold")).pack(anchor="w")
+
+    header = ttk.Frame(main_area)
+    header.pack(fill="x", padx=22, pady=(16, 0))
+    title_var, sub_var = tk.StringVar(), tk.StringVar()
+    ttk.Label(header, textvariable=title_var, font=T.FONT_TITLE).pack(anchor="w")
+    ttk.Label(header, textvariable=sub_var, style="Muted.TLabel").pack(anchor="w")
+    tk.Frame(main_area, bg=T.ACCENT, height=2).pack(fill="x", padx=22, pady=(10, 6))
+
+    holder = ttk.Frame(main_area)
+    holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+    holder.rowconfigure(0, weight=1)
+    holder.columnconfigure(0, weight=1)
+    pages, nav = {}, {}
+    for key, *_ in PAGES:
+        f = ttk.Frame(holder)
+        f.grid(row=0, column=0, sticky="nsew")
+        pages[key] = f
+
+    def select(key):
+        for k, (bar, lbl, row) in nav.items():
+            on = k == key
+            bg = "#1a0c10" if on else T.SIDEBAR
+            for w in (row, lbl):
+                w.configure(bg=bg)
+            bar.configure(bg=T.ACCENT if on else T.SIDEBAR)
+            lbl.configure(fg="#ffffff" if on else T.MUTED)
+        for k, icon, name, sub in PAGES:
+            if k == key:
+                title_var.set(name)
+                sub_var.set(sub)
+        pages[key].tkraise()
+        state["page"] = key
+
+    state = {"page": None, "busy": False}
+
+    for key, icon, name, _ in PAGES:
+        row = tk.Frame(side, bg=T.SIDEBAR, cursor="hand2")
+        row.pack(fill="x", pady=1)
+        bar = tk.Frame(row, bg=T.SIDEBAR, width=4)
+        bar.pack(side="left", fill="y")
+        lbl = tk.Label(row, text=f"  {icon}   {name}", bg=T.SIDEBAR, fg=T.MUTED, anchor="w",
+                       font=("Segoe UI", 11), padx=10, pady=10, cursor="hand2")
+        lbl.pack(side="left", fill="x", expand=True)
+        nav[key] = (bar, lbl, row)
+        for w in (row, lbl):
+            w.bind("<Button-1>", lambda e, k=key: select(k))
+            w.bind("<Enter>", lambda e, k=key: state["page"] != k and nav[k][1].configure(fg=T.TEXT))
+            w.bind("<Leave>", lambda e, k=key: state["page"] != k and nav[k][1].configure(fg=T.MUTED))
 
     stops = []
 
@@ -64,44 +127,44 @@ def main():
                 pass
         root.after(200, root.destroy)
 
+    def failed(page, what, ex):
+        traceback.print_exc()
+        ttk.Label(page, text=f"{what} не запустился:\n{ex}", style="Warn.TLabel",
+                  justify="left").pack(padx=10, pady=10, anchor="w")
+
     try:
         import sewing_bot
-        stops.append(sewing_bot.build_bot_tab(tab_bot, request_close=close))
+        stops.append(sewing_bot.build_bot_tab(pages["bot"], request_close=close))
     except Exception as ex:
-        traceback.print_exc()
-        tk.Label(tab_bot, text=f"Бот не запустился:\n{ex}", fg="#c0392b",
-                 justify="left").pack(padx=10, pady=10)
+        failed(pages["bot"], "Бот", ex)
     try:
         import ram_cleaner
         if ram_cleaner.psutil is None:
             raise RuntimeError("не найдена библиотека psutil")
-        stops.append(ram_cleaner.build_ram_tab(tab_ram))
+        stops.append(ram_cleaner.build_ram_tab(pages["ram"]))
     except Exception as ex:
-        traceback.print_exc()
-        tk.Label(tab_ram, text=f"Чистильщик не запустился:\n{ex}", fg="#c0392b",
-                 justify="left").pack(padx=10, pady=10)
-
+        failed(pages["ram"], "Чистильщик", ex)
     try:
         import cooking
-        stops.append(cooking.build_cooking_tab(tab_cook))
+        stops.append(cooking.build_cooking_tab(pages["cook"]))
     except Exception as ex:
-        traceback.print_exc()
-        tk.Label(tab_cook, text=f"Готовка не запустилась:\n{ex}", fg="#c0392b",
-                 justify="left").pack(padx=10, pady=10)
+        failed(pages["cook"], "Раздел готовки", ex)
 
-    # ---------------- нижняя панель: поверх окон + обновления
-    bar = ttk.Frame(root)
-    bar.pack(fill="x", padx=6, pady=(0, 6))
+    # ---------------- низ меню: поверх окон, версия, обновления
+    foot = tk.Frame(side, bg=T.SIDEBAR)
+    foot.pack(side="bottom", fill="x", padx=14, pady=14)
     top_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(bar, text="Поверх окон", variable=top_var,
-                    command=lambda: root.attributes("-topmost", top_var.get())).pack(side="left")
+    tk.Checkbutton(foot, text="Поверх окон", variable=top_var, bg=T.SIDEBAR, fg=T.MUTED,
+                   activebackground=T.SIDEBAR, activeforeground=T.TEXT, selectcolor=T.FIELD,
+                   bd=0, highlightthickness=0, font=("Segoe UI", 9),
+                   command=lambda: root.attributes("-topmost", top_var.get())).pack(anchor="w")
     upd_var = tk.StringVar(value=f"Версия {__version__}")
-    ttk.Label(bar, textvariable=upd_var).pack(side="left", padx=10)
-    btn = ttk.Button(bar, text="Проверить обновления")
-    btn.pack(side="right")
+    tk.Label(foot, textvariable=upd_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 9),
+             wraplength=200, justify="left").pack(anchor="w", pady=(8, 6))
+    btn = ttk.Button(foot, text="Проверить обновления")
+    btn.pack(fill="x")
 
     ui = queue.Queue()            # результаты из фоновых потоков -> в окно
-    state = {"busy": False}
 
     def bg(fn, *args):
         def run():
@@ -125,7 +188,7 @@ def main():
 
     def on_checked(info):
         if info is None:
-            upd_var.set(f"Версия {__version__} - последняя")
+            upd_var.set(f"Версия {__version__} — последняя")
             state["busy"] = False
             return
         notes = info["notes"][:500]
@@ -174,6 +237,8 @@ def main():
 
     btn.configure(command=lambda: start_check(True))
     root.protocol("WM_DELETE_WINDOW", close)
+    select("bot")
+    T.dark_titlebar(root)
     root.after(100, pump)
     root.after(1500, lambda: start_check(False))      # тихая проверка при запуске
     root.mainloop()
