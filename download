@@ -1,0 +1,9 @@
+# личные настройки и токены - не загружать в репозиторий
+*_config.json
+cooking_timers.json
+*_error.txt
+sewing_debug.png
+__pycache__/
+build/
+dist/
+*.spec

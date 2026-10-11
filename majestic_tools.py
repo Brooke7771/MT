@@ -49,8 +49,10 @@ def main():
     nb.pack(fill="both", expand=True, padx=4, pady=4)
     tab_bot = ttk.Frame(nb)
     tab_ram = ttk.Frame(nb)
+    tab_cook = ttk.Frame(nb)
     nb.add(tab_bot, text="Швейный бот")
     nb.add(tab_ram, text="Чистильщик ОЗУ")
+    nb.add(tab_cook, text="Готовка")
 
     stops = []
 
@@ -77,6 +79,14 @@ def main():
     except Exception as ex:
         traceback.print_exc()
         tk.Label(tab_ram, text=f"Чистильщик не запустился:\n{ex}", fg="#c0392b",
+                 justify="left").pack(padx=10, pady=10)
+
+    try:
+        import cooking
+        stops.append(cooking.build_cooking_tab(tab_cook))
+    except Exception as ex:
+        traceback.print_exc()
+        tk.Label(tab_cook, text=f"Готовка не запустилась:\n{ex}", fg="#c0392b",
                  justify="left").pack(padx=10, pady=10)
 
     # ---------------- нижняя панель: поверх окон + обновления
