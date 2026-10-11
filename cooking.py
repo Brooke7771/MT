@@ -12,8 +12,8 @@ import urllib.request
 
 import net
 
-from cooking_data import (RECIPES, PREMIUM_MULT, PREMIUM100_MULT, MULTI_MAX, MULTI_TIME,
-                          ACCEL_CUT, ACCEL_GAP_MIN)
+from cooking_data import (RECIPES, BUFFS, IMG_BASE, PREMIUM_MULT, PREMIUM100_MULT, MULTI_MAX,
+                          MULTI_TIME, ACCEL_CUT, ACCEL_GAP_MIN)
 
 
 def app_dir():
@@ -24,6 +24,7 @@ def app_dir():
 
 CONFIG_PATH = os.path.join(app_dir(), "cooking_config.json")     # тут лежит токен - не публикуй
 TIMERS_PATH = os.path.join(app_dir(), "cooking_timers.json")
+CACHE_DIR = os.path.join(app_dir(), "cache", "img")   # картинки блюд качаются при первом показе
 
 
 def load_json(path, default):
@@ -110,7 +111,7 @@ def accel_minutes(minutes, n):
 
 
 def ingredient_cost(r, costs):
-    return sum(q * costs.get(n, 0) for n, q, _ in r["ingredients"])
+    return sum(ing[1] * costs.get(ing[0], 0) for ing in r["ingredients"])
 
 
 def per_hour(r, st, costs):
@@ -126,7 +127,7 @@ def calc(r, runs, batch, accels, st, costs):
     cooks = runs * batch
     lo, hi = price(r, st)
     portions = r["yield"] * cooks
-    ings = [(n, q * cooks, src, costs.get(n)) for n, q, src in r["ingredients"]]
+    ings = [(ing[0], ing[1] * cooks, ing[2], costs.get(ing[0])) for ing in r["ingredients"]]
     cost = sum(q * (c or 0) for _, q, _, c in ings)
     return {"portions": portions, "minutes_one": one, "minutes": one * runs,
             "exp": r["exp"] * cooks, "income": (portions * lo, portions * hi),
@@ -184,24 +185,148 @@ def beep():
             pass
 
 
+# ================================================================ картинки
+class ImageCache:
+    """Картинки блюд и ингредиентов. Качаются с files.fletcher-wiki.com при первом показе
+    и кэшируются у тебя на компьютере (в репозиторий они не кладутся)."""
+
+    def __init__(self, ui_queue):
+        try:
+            from PIL import Image, ImageDraw, ImageTk   # noqa: F401
+            self.pil = True
+        except Exception:
+            self.pil = False
+        self.photos, self.waiting, self.placeholders = {}, {}, {}
+        self.inflight, self.failed = set(), set()
+        self.jobs = queue.Queue()
+        self.ui = ui_queue
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        if self.pil:
+            for _ in range(3):
+                threading.Thread(target=self._worker, daemon=True).start()
+
+    @staticmethod
+    def path(img):
+        return os.path.join(CACHE_DIR, img.replace("/", "_"))
+
+    def _worker(self):
+        while True:
+            img = self.jobs.get()
+            try:
+                req = urllib.request.Request(IMG_BASE + img, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+                    "Referer": "https://fletcher-wiki.com/"})
+                with net.urlopen(req, timeout=20) as r:
+                    data = r.read()
+                tmp = self.path(img) + ".part"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, self.path(img))
+                self.ui.put(("img", img, True))
+            except Exception:
+                self.ui.put(("img", img, False))
+
+    def _load(self, img, size):
+        from PIL import Image, ImageTk
+        im = Image.open(self.path(img)).convert("RGBA")
+        im.thumbnail((size, size), Image.LANCZOS)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        canvas.paste(im, ((size - im.width) // 2, (size - im.height) // 2), im)
+        return ImageTk.PhotoImage(canvas)
+
+    def placeholder(self, size, letter, bg):
+        key = (size, letter, bg)
+        if key not in self.placeholders:
+            from PIL import Image, ImageDraw, ImageTk
+            im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle((1, 1, size - 2, size - 2), radius=max(3, size // 6), fill=bg)
+            font = None
+            from PIL import ImageFont
+            for name in ("segoeuib.ttf", "segoeui.ttf", "arial.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):
+                try:
+                    font = ImageFont.truetype(name, max(8, size // 2))
+                    break
+                except Exception:
+                    continue
+            if font is not None:
+                d.text((size // 2, size // 2), letter, fill="#6c6c78", anchor="mm", font=font)
+            self.placeholders[key] = ImageTk.PhotoImage(im)
+        return self.placeholders[key]
+
+    def set(self, label, img, size, name, bg="#22222a"):
+        if not self.pil:
+            label.configure(text=(name or "?")[:1], width=2)
+            return
+        key = (img, size)
+        if key in self.photos:
+            label.configure(image=self.photos[key])
+            return
+        label.configure(image=self.placeholder(size, (name or "?")[:1].upper(), bg))
+        if not img or img in self.failed:
+            return
+        if os.path.exists(self.path(img)):
+            try:
+                self.photos[key] = self._load(img, size)
+                label.configure(image=self.photos[key])
+            except Exception:
+                self.failed.add(img)
+            return
+        self.waiting.setdefault(img, []).append((label, size))
+        if img not in self.inflight:
+            self.inflight.add(img)
+            self.jobs.put(img)
+
+    def arrived(self, img, ok):
+        self.inflight.discard(img)
+        if not ok:
+            self.failed.add(img)
+        for label, size in self.waiting.pop(img, []):
+            if not ok:
+                continue
+            try:
+                key = (img, size)
+                if key not in self.photos:
+                    self.photos[key] = self._load(img, size)
+                label.configure(image=self.photos[key])
+            except Exception:
+                pass
+
+
 # ================================================================ окно
 SORTS = ["Как на сайте", "Доход в час", "Опыт в час", "Навык", "Время готовки", "Название"]
-BATCH_NAMES = {1: "x1 (обычная)", 2: "x2 (мультиготовка)", 3: "x3 (мультиготовка)"}
+PAGE_SIZE = 12
+CARD_W = 310
+SPEEDUP_GAP = 3600          # следующее ускорение - через час после предыдущего
+SPEEDUP_CUT = 0.15          # ускорение срезает 15% оставшегося времени
 
 
 def build_cooking_tab(parent):
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import ttk, simpledialog
+    import theme as T
+
+    CARD = "#16161b"
+    CARD2 = "#1c1c22"
+    CHIP = "#2a0f15"
+    F = "Segoe UI"
 
     cfg = load_json(CONFIG_PATH, {})
     for k, v in {"token": "", "chat_id": None, "chat_name": "", "remind": True, "remind_min": 5,
-                 "premium": False, "premium100": False, "quality": 100, "skill": 9,
-                 "kitchen": 5, "faculty": True, "costs": {}}.items():
+                 "remind_speedup": True, "premium": False, "premium100": False, "quality": 100,
+                 "skill": 9, "kitchen": 5, "faculty": True, "costs": {}, "label": "Плита 1"}.items():
         cfg.setdefault(k, v)
     timers = load_json(TIMERS_PATH, [])
+    for t in timers:
+        for k, v in {"img": None, "base": t.get("end", 0) - t.get("start", 0), "last_speedup": None,
+                     "speedups": 0, "saved": 0.0, "remind_speedup": cfg["remind_speedup"],
+                     "speedup_key": None}.items():
+            t.setdefault(k, v)
     ui = queue.Queue()
+    images = ImageCache(ui)
     alive = {"on": True}
-    pad = {"padx": 6, "pady": 3}
+    st = {"page": 1, "items": [], "batch": {}, "expanded": set()}
 
     def persist_cfg():
         save_json(CONFIG_PATH, cfg)
@@ -209,9 +334,27 @@ def build_cooking_tab(parent):
     def persist_timers():
         save_json(TIMERS_PATH, timers)
 
-    # ---------------------------------------------------------------- фильтры и модификаторы
+    def lbl(master, text="", fg=T.TEXT, bg=CARD, size=10, bold=False, **kw):
+        return tk.Label(master, text=text, fg=fg, bg=bg, font=(F, size, "bold" if bold else "normal"), **kw)
+
+    def flat_btn(master, text, cmd, accent=False, **kw):
+        b = tk.Button(master, text=text, command=cmd, relief="flat", bd=0, cursor="hand2",
+                      bg=T.ACCENT if accent else "#24242b", fg="#ffffff" if accent else T.TEXT,
+                      activebackground=T.ACCENT_HOVER if accent else "#2e2e36", activeforeground="#ffffff",
+                      font=(F, 9 if not accent else 10, "bold"), padx=10, pady=5, **kw)
+        return b
+
+    def ivar(v, default):
+        try:
+            return int(v.get())
+        except Exception:
+            return default
+
+    # ---------------------------------------------------------------- фильтры
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(1, weight=1)
     top = ttk.Frame(parent)
-    top.grid(row=0, column=0, columnspan=2, sticky="ew", **pad)
+    top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 6))
     search_var = tk.StringVar()
     skill_var = tk.IntVar(value=cfg["skill"])
     kitchen_var = tk.IntVar(value=cfg["kitchen"])
@@ -221,154 +364,150 @@ def build_cooking_tab(parent):
     quality_var = tk.IntVar(value=cfg["quality"])
     sort_var = tk.StringVar(value=SORTS[0])
 
-    def on_change(*_):
-        refresh_list()
-        show_detail()
+    def on_filter(*_):
+        st["page"] = 1
+        refresh()
 
     row1 = ttk.Frame(top)
     row1.pack(fill="x")
     ttk.Label(row1, text="Поиск:").pack(side="left")
-    ttk.Entry(row1, textvariable=search_var, width=16).pack(side="left", padx=(2, 8))
-    ttk.Label(row1, text="Мой навык:").pack(side="left")
-    ttk.Spinbox(row1, from_=1, to=9, width=3, textvariable=skill_var, command=on_change).pack(side="left", padx=(2, 8))
+    ttk.Entry(row1, textvariable=search_var, width=18).pack(side="left", padx=(4, 12))
+    ttk.Label(row1, text="Навык:").pack(side="left")
+    ttk.Spinbox(row1, from_=1, to=9, width=3, textvariable=skill_var, command=on_filter).pack(side="left", padx=(4, 10))
     ttk.Label(row1, text="Кухня:").pack(side="left")
-    ttk.Spinbox(row1, from_=1, to=5, width=3, textvariable=kitchen_var, command=on_change).pack(side="left", padx=(2, 8))
-    ttk.Checkbutton(row1, text="Есть факультет", variable=faculty_var, command=on_change).pack(side="left", padx=(0, 8))
+    ttk.Spinbox(row1, from_=1, to=5, width=3, textvariable=kitchen_var, command=on_filter).pack(side="left", padx=(4, 10))
+    ttk.Checkbutton(row1, text="Есть факультет", variable=faculty_var, command=on_filter).pack(side="left", padx=(0, 10))
     ttk.Label(row1, text="Сортировка:").pack(side="left")
     cb = ttk.Combobox(row1, textvariable=sort_var, values=SORTS, state="readonly", width=14)
-    cb.pack(side="left", padx=2)
-    cb.bind("<<ComboboxSelected>>", lambda e: refresh_list())
-    search_var.trace_add("write", lambda *a: refresh_list())
+    cb.pack(side="left", padx=4)
+    cb.bind("<<ComboboxSelected>>", on_filter)
+    search_var.trace_add("write", on_filter)
+    ttk.Button(row1, text="Цены ингредиентов", command=lambda: open_costs()).pack(side="right")
 
     row2 = ttk.Frame(top)
-    row2.pack(fill="x", pady=(3, 0))
+    row2.pack(fill="x", pady=(6, 0))
     ttk.Label(row2, text="Качество блюда, %:").pack(side="left")
     ttk.Spinbox(row2, from_=0, to=100, increment=5, width=4, textvariable=quality_var,
-               command=on_change).pack(side="left", padx=(2, 10))
-    ttk.Checkbutton(row2, text="Активный Premium (+25%)", variable=premium_var, command=on_change).pack(side="left", padx=(0, 8))
+                command=lambda: refresh()).pack(side="left", padx=(4, 12))
+    ttk.Checkbutton(row2, text="Активный Premium (+25%)", variable=premium_var,
+                    command=lambda: refresh()).pack(side="left", padx=(0, 10))
     ttk.Checkbutton(row2, text="Бонус за 100 дней Premium (+5.2%)", variable=prem100_var,
-                    command=on_change).pack(side="left")
+                    command=lambda: refresh()).pack(side="left")
 
-    # ---------------------------------------------------------------- таблица блюд
-    cols = ("name", "skill", "out", "time", "exp", "price", "perh", "exph")
-    heads = ("Блюдо", "Навык/кухня", "Выход", "Время", "Опыт", "Цена порции", "Доход/ч", "Опыт/ч")
-    widths = (230, 105, 62, 95, 58, 125, 80, 70)
-    tree = ttk.Treeview(parent, columns=cols, show="headings", height=14, selectmode="browse")
-    for c, h, w in zip(cols, heads, widths):
-        tree.heading(c, text=h)
-        tree.column(c, width=w, anchor="w" if c == "name" else "e")
-    tree.grid(row=1, column=0, sticky="nsew", **pad)
-    tree.tag_configure("odd", background="#19191e")
+    # ---------------------------------------------------------------- сетка карточек
+    left = ttk.Frame(parent)
+    left.grid(row=1, column=0, sticky="nsew")
+    left.rowconfigure(0, weight=1)
+    left.columnconfigure(0, weight=1)
+    canvas = tk.Canvas(left, bg=T.BG, highlightthickness=0, bd=0)
+    vsb = ttk.Scrollbar(left, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+    grid_frame = tk.Frame(canvas, bg=T.BG)
+    win = canvas.create_window(0, 0, window=grid_frame, anchor="nw")
+    grid_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    pager = ttk.Frame(left)
+    pager.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+    cards = []
 
-    # ---------------------------------------------------------------- карточка блюда
-    card = ttk.LabelFrame(parent, text="Блюдо")
-    card.grid(row=1, column=1, sticky="nsew", **pad)
-    title_var = tk.StringVar(value="Выбери блюдо в таблице")
-    ttk.Label(card, textvariable=title_var, font=("Segoe UI", 13, "bold"),
-              wraplength=360).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-    info_var = tk.StringVar()
-    ttk.Label(card, textvariable=info_var, wraplength=360, justify="left", style="Muted.TLabel").grid(
-        row=1, column=0, columnspan=4, sticky="w", **pad)
+    def layout_cards(width=None):
+        width = width or canvas.winfo_width()
+        if width < 50:
+            return
+        grid_frame.update_idletasks()
+        cw = max([c.winfo_reqwidth() for c in cards] + [CARD_W])
+        cols = max(1, (width + 10) // (cw + 10))
+        for col in range(8):
+            grid_frame.columnconfigure(col, minsize=cw if col < cols else 0,
+                                       uniform="card" if col < cols else "", weight=0)
+        for n, c in enumerate(cards):
+            c.grid(row=n // cols, column=n % cols, padx=5, pady=5, sticky="nsew")
+        canvas.itemconfigure(win, width=max(width, cols * (cw + 10)))
 
-    runs_var = tk.IntVar(value=1)
-    batch_var = tk.StringVar(value=BATCH_NAMES[1])
-    accel_var = tk.IntVar(value=0)
-    ttk.Label(card, text="Загрузок подряд:").grid(row=2, column=0, sticky="w", **pad)
-    ttk.Spinbox(card, from_=1, to=99, width=4, textvariable=runs_var,
-               command=lambda: show_detail()).grid(row=2, column=1, sticky="w", **pad)
-    ttk.Label(card, text="Ускорителей:").grid(row=2, column=2, sticky="e", **pad)
-    accel_spin = ttk.Spinbox(card, from_=0, to=50, width=4, textvariable=accel_var,
-                            command=lambda: show_detail())
-    accel_spin.grid(row=2, column=3, sticky="w", **pad)
-    ttk.Label(card, text="Режим:").grid(row=3, column=0, sticky="w", **pad)
-    batch_cb = ttk.Combobox(card, textvariable=batch_var, state="readonly", width=20,
-                            values=[BATCH_NAMES[1]])
-    batch_cb.grid(row=3, column=1, columnspan=3, sticky="w", **pad)
-    batch_cb.bind("<<ComboboxSelected>>", lambda e: show_detail())
+    canvas.bind("<Configure>", lambda e: layout_cards(e.width))
 
-    icols = ("ing", "qty", "src", "cost")
-    itree = ttk.Treeview(card, columns=icols, show="headings", height=6, selectmode="browse")
-    for c, h, w in zip(icols, ("Ингредиент", "Нужно", "Где взять", "Цена за 1"), (150, 60, 115, 70)):
-        itree.heading(c, text=h)
-        itree.column(c, width=w, anchor="w" if c in ("ing", "src") else "e")
-    itree.grid(row=4, column=0, columnspan=4, sticky="ew", **pad)
-    itree.tag_configure("nocost", foreground="#8c8c99")
-    cost_var = tk.StringVar()
-    ttk.Label(card, text="Цена за 1 шт выбранного:").grid(row=5, column=0, columnspan=2, sticky="w", **pad)
-    ttk.Entry(card, textvariable=cost_var, width=9).grid(row=5, column=2, sticky="w", **pad)
-    ttk.Button(card, text="Сохранить цену", command=lambda: set_cost()).grid(row=5, column=3, sticky="e", **pad)
-    itree.bind("<<TreeviewSelect>>", lambda e: pick_ing())
+    def wheel_for(cv):
+        def on_wheel(e):
+            cv.yview_scroll(int(-e.delta / 120) if e.delta else (1 if e.num == 5 else -1), "units")
+        return on_wheel
 
-    totals_var = tk.StringVar()
-    ttk.Label(card, textvariable=totals_var, justify="left", font=("Consolas", 9)).grid(
-        row=6, column=0, columnspan=4, sticky="w", **pad)
-    label_var = tk.StringVar(value="Плита 1")
-    ttk.Label(card, text="Метка:").grid(row=7, column=0, sticky="w", **pad)
-    ttk.Entry(card, textvariable=label_var, width=14).grid(row=7, column=1, columnspan=2, sticky="w", **pad)
-    ttk.Button(card, text="Поставить таймер", style="Accent.TButton", command=lambda: add_timer_from_dish()).grid(
-        row=7, column=3, sticky="e", **pad)
+    def bind_wheel(widget, cv):
+        widget.bind("<Enter>", lambda e: (cv.bind_all("<MouseWheel>", wheel_for(cv)),
+                                          cv.bind_all("<Button-4>", wheel_for(cv)),
+                                          cv.bind_all("<Button-5>", wheel_for(cv))))
+        widget.bind("<Leave>", lambda e: (cv.unbind_all("<MouseWheel>"), cv.unbind_all("<Button-4>"),
+                                          cv.unbind_all("<Button-5>")))
 
-    # ---------------------------------------------------------------- таймеры
-    tframe = ttk.LabelFrame(parent, text="Таймеры")
-    tframe.grid(row=2, column=0, sticky="nsew", **pad)
-    tcols = ("dish", "label", "end", "left")
-    ttree = ttk.Treeview(tframe, columns=tcols, show="headings", height=5, selectmode="browse")
-    for c, h, w in zip(tcols, ("Что готовится", "Метка", "Готово в", "Осталось"), (300, 110, 120, 130)):
-        ttree.heading(c, text=h)
-        ttree.column(c, width=w, anchor="w")
-    ttree.grid(row=0, column=0, columnspan=6, sticky="ew", **pad)
-    ttree.tag_configure("done", foreground="#3ecf6e")
-    custom_name = tk.StringVar(value="Свой таймер")
+    bind_wheel(left, canvas)
+
+    # ---------------------------------------------------------------- правая панель: таймеры
+    side = ttk.Frame(parent, width=390)
+    side.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
+    side.grid_propagate(False)
+    side.rowconfigure(2, weight=1)
+    side.columnconfigure(0, weight=1)
+    ttk.Label(side, text="Таймеры", font=(F, 13, "bold")).grid(row=0, column=0, sticky="w")
+    add_row = ttk.Frame(side)
+    add_row.grid(row=1, column=0, sticky="ew", pady=(4, 6))
+    label_var = tk.StringVar(value=cfg["label"])
     custom_min = tk.IntVar(value=60)
-    ttk.Entry(tframe, textvariable=custom_name, width=18).grid(row=1, column=0, sticky="w", **pad)
-    ttk.Spinbox(tframe, from_=1, to=5000, width=5, textvariable=custom_min).grid(row=1, column=1, sticky="w")
-    ttk.Label(tframe, text="мин").grid(row=1, column=2, sticky="w")
-    ttk.Button(tframe, text="Добавить", command=lambda: add_custom_timer()).grid(row=1, column=3, **pad)
-    ttk.Button(tframe, text="Удалить", command=lambda: delete_timer()).grid(row=1, column=4, **pad)
-    ttk.Button(tframe, text="Убрать готовые", command=lambda: clear_done()).grid(row=1, column=5, **pad)
+    ttk.Label(add_row, text="Метка:").pack(side="left")
+    ttk.Entry(add_row, textvariable=label_var, width=10).pack(side="left", padx=(4, 8))
+    ttk.Label(add_row, text="Свой:").pack(side="left")
+    ttk.Spinbox(add_row, from_=1, to=5000, width=5, textvariable=custom_min).pack(side="left", padx=4)
+    ttk.Label(add_row, text="мин").pack(side="left")
+    ttk.Button(add_row, text="+", width=3, command=lambda: add_custom_timer()).pack(side="left", padx=4)
 
-    # ---------------------------------------------------------------- Telegram
-    tgf = ttk.LabelFrame(parent, text="Уведомления в Telegram")
-    tgf.grid(row=2, column=1, sticky="nsew", **pad)
+    tcanvas = tk.Canvas(side, bg=T.BG, highlightthickness=0, bd=0)
+    tcanvas.grid(row=2, column=0, sticky="nsew")
+    tlist = tk.Frame(tcanvas, bg=T.BG)
+    twin = tcanvas.create_window(0, 0, window=tlist, anchor="nw")
+    tlist.bind("<Configure>", lambda e: tcanvas.configure(scrollregion=tcanvas.bbox("all")))
+    tcanvas.bind("<Configure>", lambda e: tcanvas.itemconfigure(twin, width=e.width))
+    bind_wheel(tcanvas, tcanvas)
+    timer_widgets = {}
+
+    # ---- Telegram
+    tgf = ttk.LabelFrame(side, text="Уведомления в Telegram")
+    tgf.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     token_var = tk.StringVar(value=cfg["token"])
-    ttk.Label(tgf, text="Токен бота:").grid(row=0, column=0, sticky="w", **pad)
-    ttk.Entry(tgf, textvariable=token_var, width=30, show="•").grid(row=0, column=1, columnspan=3, sticky="w", **pad)
+    ttk.Label(tgf, text="Токен бота:").grid(row=0, column=0, sticky="w")
+    ttk.Entry(tgf, textvariable=token_var, width=26, show="•").grid(row=0, column=1, columnspan=2, sticky="ew", padx=4)
     tg_status = tk.StringVar(value=(f"Подключено: {cfg['chat_name']}" if cfg["chat_id"] else "Не подключено"))
-    ttk.Button(tgf, text="Подключить", command=lambda: tg_connect()).grid(row=1, column=0, sticky="w", **pad)
-    ttk.Button(tgf, text="Тест", command=lambda: tg_test()).grid(row=1, column=1, sticky="w", **pad)
-    ttk.Label(tgf, textvariable=tg_status, wraplength=320).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
+    ttk.Button(tgf, text="Подключить", command=lambda: tg_connect()).grid(row=1, column=0, sticky="w", pady=4)
+    ttk.Button(tgf, text="Тест", command=lambda: tg_test()).grid(row=1, column=1, sticky="w", padx=4)
+    ttk.Label(tgf, textvariable=tg_status, style="Muted.TLabel", wraplength=340).grid(row=2, column=0, columnspan=3, sticky="w")
     remind_var = tk.BooleanVar(value=cfg["remind"])
     remind_min = tk.IntVar(value=cfg["remind_min"])
-    ttk.Checkbutton(tgf, text="Напоминать за", variable=remind_var,
-                    command=lambda: save_settings()).grid(row=3, column=0, sticky="w", **pad)
-    ttk.Spinbox(tgf, from_=1, to=120, width=4, textvariable=remind_min,
-               command=lambda: save_settings()).grid(row=3, column=1, sticky="w")
-    ttk.Label(tgf, text="мин до готовности").grid(row=3, column=2, sticky="w")
+    speed_var = tk.BooleanVar(value=cfg["remind_speedup"])
+    rr = ttk.Frame(tgf)
+    rr.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    ttk.Checkbutton(rr, text="Напоминать за", variable=remind_var, command=lambda: save_settings()).pack(side="left")
+    ttk.Spinbox(rr, from_=1, to=120, width=4, textvariable=remind_min, command=lambda: save_settings()).pack(side="left", padx=4)
+    ttk.Label(rr, text="мин до готовности").pack(side="left")
+    ttk.Checkbutton(tgf, text="Напоминать, когда можно ускорить (раз в час)", variable=speed_var,
+                    command=lambda: save_settings()).grid(row=4, column=0, columnspan=3, sticky="w")
+
     status_var = tk.StringVar()
     ttk.Label(parent, textvariable=status_var, style="Muted.TLabel").grid(
-        row=3, column=0, columnspan=2, sticky="w", **pad)
+        row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-    # ================================================================ логика
-    def ivar(v, default):
-        try:
-            return int(v.get())
-        except Exception:
-            return default
-
+    # ================================================================ данные
     def save_settings():
         cfg.update(skill=min(9, max(1, ivar(skill_var, 9))), kitchen=min(5, max(1, ivar(kitchen_var, 5))),
                    faculty=faculty_var.get(), premium=premium_var.get(), premium100=prem100_var.get(),
                    quality=min(100, max(0, ivar(quality_var, 100))), remind=remind_var.get(),
-                   remind_min=max(1, ivar(remind_min, 5)), token=token_var.get().strip())
+                   remind_min=max(1, ivar(remind_min, 5)), remind_speedup=speed_var.get(),
+                   token=token_var.get().strip(), label=label_var.get().strip() or "Плита 1")
         persist_cfg()
 
-    def refresh_list():
-        save_settings()
+    def filtered():
         q = search_var.get().strip().lower()
         costs = cfg["costs"]
         items = []
         for i, r in enumerate(RECIPES):
-            if q and q not in r["name"].lower() and not any(q in n.lower() for n, _, _ in r["ingredients"]):
+            if q and q not in r["name"].lower() and not any(q in ing[0].lower() for ing in r["ingredients"]):
                 continue
             if r["skill"] > cfg["skill"] or r["kitchen"] > cfg["kitchen"]:
                 continue
@@ -386,152 +525,390 @@ def build_cooking_tab(parent):
             items.sort(key=lambda i: RECIPES[i]["minutes"])
         elif key == "Название":
             items.sort(key=lambda i: RECIPES[i]["name"])
-        sel = selected_recipe()
-        tree.delete(*tree.get_children())
-        for i in items:
-            r = RECIPES[i]
-            lo, hi = price(r, cfg)
-            ph, eh = per_hour(r, cfg, costs)
-            name = r["name"] + ("  [факультет]" if r["faculty"] else "")
-            tree.insert("", "end", iid=str(i), tags=("odd",) if len(tree.get_children()) % 2 else (), values=(
-                name, f"{r['skill']} / {r['kitchen']}", f"x{r['yield']}", fmt_minutes(r["minutes"]),
-                r["exp"], f"{money(lo)}–{money(hi)}", money(ph), f"{eh:.1f}"))
-        if sel is not None and tree.exists(str(sel)):
-            tree.selection_set(str(sel))
-        status_var.set(f"Блюд: {len(items)} из {len(RECIPES)}. Доход в час - по средней цене "
-                       f"минус ингредиенты, если ты указал их цены.")
+        return items
 
-    def selected_recipe():
-        s = tree.selection()
-        return int(s[0]) if s else None
+    # ================================================================ карточка блюда
+    def section(card, title, aside=""):
+        box = tk.Frame(card, bg=CARD2)
+        box.pack(fill="x", padx=8, pady=(6, 0))
+        head = tk.Frame(box, bg=CARD2)
+        head.pack(fill="x", padx=8, pady=(6, 2))
+        lbl(head, title, fg=T.MUTED, bg=CARD2, size=9, bold=True).pack(side="left")
+        if aside:
+            lbl(head, aside, fg=T.MUTED, bg=CARD2, size=9).pack(side="right")
+        return box
 
-    def current_batch():
-        for b, name in BATCH_NAMES.items():
-            if batch_var.get() == name:
-                return b
-        return 1
+    def chip(master, text, fg=T.ACCENT, bg=CHIP):
+        return tk.Label(master, text=text, fg=fg, bg=bg, font=(F, 8, "bold"), padx=6, pady=2)
 
-    def show_detail():
-        i = selected_recipe()
-        if i is None:
-            return
-        save_settings()
+    def make_card(i):
         r = RECIPES[i]
-        mx = MULTI_MAX.get(cfg["kitchen"], 1)
-        batch_cb.configure(values=[BATCH_NAMES[b] for b in range(1, mx + 1)])
-        batch = min(current_batch(), mx)
-        batch_var.set(BATCH_NAMES[batch])
-        runs = max(1, ivar(runs_var, 1))
-        max_acc = max_accels(multi_minutes(r, batch, cfg["kitchen"]))
-        accel_spin.configure(to=max_acc)
-        accels = min(max(0, ivar(accel_var, 0)), max_acc)
-        if ivar(accel_var, 0) != accels:
-            accel_var.set(accels)
-        c = calc(r, runs, batch, accels, cfg, cfg["costs"])
-        title_var.set(r["name"])
-        extra = f" Бафф: {', '.join(r['buffs'])}." if r["buffs"] else ""
-        info_var.set(f"{r['methods']}. Навык {r['skill']}, кухня {r['kitchen']}, "
-                     f"{'нужен факультет кулинарии' if r['faculty'] else 'факультет не нужен'}.{extra}")
-        sel_ing = itree.selection()
-        itree.delete(*itree.get_children())
-        for n, q, src, cost in c["ingredients"]:
-            itree.insert("", "end", iid=n, tags=("nocost",) if cost is None else (), values=(n, f"x{q}", src or "-", "-" if cost is None else money(cost)))
-        for s_ in sel_ing:
-            if itree.exists(s_):
-                itree.selection_set(s_)
-        lo, hi = c["income"]
-        lines = [f"Порций: {c['portions']}   Опыт: +{c['exp']}",
-                 f"Время: {fmt_minutes(c['minutes'])}" +
-                 (f" ({runs} x {fmt_minutes(c['minutes_one'])})" if runs > 1 else "") +
-                 (f", ускорителей до {max_acc}" if max_acc and not accels else ""),
-                 f"Выручка: {money(lo)} – {money(hi)} $"]
-        if c["cost"]:
-            lines.append(f"Ингредиенты: {money(c['cost'])} $" +
-                         (" (не все цены указаны)" if c["unknown_cost"] else ""))
-            lines.append(f"Прибыль: {money(lo - c['cost'])} – {money(hi - c['cost'])} $")
-        totals_var.set("\n".join(lines))
+        card = tk.Frame(grid_frame, bg=CARD, width=CARD_W, highlightthickness=1,
+                        highlightbackground=T.BORDER, highlightcolor=T.BORDER)
+        card.bind("<Enter>", lambda e: card.configure(highlightbackground=T.ACCENT))
+        card.bind("<Leave>", lambda e: card.configure(highlightbackground=T.BORDER))
 
-    def pick_ing():
-        s_ = itree.selection()
-        if s_:
-            v = cfg["costs"].get(s_[0])
-            cost_var.set("" if v is None else str(v))
+        # шапка: картинка, название, способы
+        head = tk.Frame(card, bg=CARD)
+        head.pack(fill="x", padx=8, pady=(8, 0))
+        pic = tk.Label(head, bg=CARD)
+        pic.pack(side="left", anchor="n")
+        images.set(pic, r.get("img"), 76, r["name"])
+        right = tk.Frame(head, bg=CARD)
+        right.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        lbl(right, r["name"], size=11, bold=True, wraplength=CARD_W - 110, justify="left").pack(anchor="w")
+        tags = tk.Frame(right, bg=CARD)
+        tags.pack(anchor="w", pady=(4, 0))
+        for n, m in enumerate(r["methods"].split(", ")):
+            chip(tags, m).grid(row=n // 2, column=n % 2, padx=(0, 4), pady=2, sticky="w")
 
-    def set_cost():
-        s_ = itree.selection()
-        if not s_:
-            status_var.set("Выбери ингредиент в списке, потом впиши цену")
-            return
-        txt = cost_var.get().replace(" ", "").replace(",", ".")
-        if txt == "":
-            cfg["costs"].pop(s_[0], None)
+        # описание: требования, факультет, баффы
+        info = tk.Frame(card, bg=CARD)
+        info.pack(fill="x", padx=10, pady=(6, 0))
+        lbl(info, f"Ранг {r['skill']}+  ·  кухня {r['kitchen']}+", fg=T.MUTED, size=9).pack(side="left")
+        if r["faculty"]:
+            chip(info, "Нужен факультет").pack(side="right")
         else:
-            try:
-                cfg["costs"][s_[0]] = max(0.0, float(txt))
-            except ValueError:
-                status_var.set("Цена - это число")
+            chip(info, "Факультет не нужен", fg=T.MUTED, bg="#202027").pack(side="right")
+        for b in r["buffs"]:
+            title, desc = BUFFS.get(b, (b, ""))
+            lbl(card, f"✦ {title}: {desc}", fg="#d9a14a", size=8, wraplength=CARD_W - 24,
+                justify="left").pack(anchor="w", padx=10, pady=(4, 0))
+        if r.get("bar_anywhere"):
+            lbl(card, "Можно продать любому бармену в городе", fg="#d9a14a", size=8).pack(anchor="w", padx=10, pady=(4, 0))
+
+        # ингредиенты
+        ings = r["ingredients"]
+        box = section(card, "Ингредиенты", str(len(ings)))
+        show = ings if i in st["expanded"] else ings[:3]
+        for name, qty, src, img in show:
+            row = tk.Frame(box, bg=CARD2)
+            row.pack(fill="x", padx=6, pady=1)
+            p = tk.Label(row, bg=CARD2)
+            p.pack(side="left")
+            images.set(p, img, 26, name, bg="#2a2a32")
+            txt = tk.Frame(row, bg=CARD2)
+            txt.pack(side="left", padx=6)
+            lbl(txt, name, bg=CARD2, size=9, bold=True, wraplength=CARD_W - 120, justify="left").pack(anchor="w")
+            cost = cfg["costs"].get(name)
+            src_short = (src or "—").split(", ")[0] + (" и др." if src and ", " in src else "")
+            sub = src_short + (f"  ·  {money(cost)} $" if cost is not None else "")
+            lbl(txt, sub, fg=T.MUTED, bg=CARD2, size=8, wraplength=CARD_W - 120, justify="left").pack(anchor="w")
+            lbl(row, f"x{qty}", bg=CARD2, size=10, bold=True).pack(side="right", padx=4)
+        if len(ings) > 3:
+            more = lbl(box, ("Свернуть ▴" if i in st["expanded"] else f"Ещё {len(ings) - 3} ▾"),
+                       fg=T.MUTED, bg=CARD2, size=9, cursor="hand2")
+            more.pack(pady=(2, 4))
+            more.bind("<Button-1>", lambda e: toggle_expand(i))
+        else:
+            tk.Frame(box, bg=CARD2, height=4).pack()
+
+        # цена
+        lo, hi = price(r, cfg)
+        box = section(card, "Цена в барах", "за порцию")
+        k_std = cfg["quality"] / 100
+        k_prem = k_std * PREMIUM_MULT * (PREMIUM100_MULT if cfg["premium100"] else 1)
+        for title, k, color in (("Стандарт", k_std, T.TEXT), ("Premium", k_prem, "#ff8a98")):
+            row = tk.Frame(box, bg=CARD2)
+            row.pack(fill="x", padx=8, pady=1)
+            lbl(row, title, fg=T.MUTED, bg=CARD2, size=9).pack(side="left")
+            lbl(row, f"{money(r['std'][0] * k)} – {money(r['std'][1] * k)} $", fg=color, bg=CARD2,
+                size=10, bold=True).pack(side="right")
+        cost = ingredient_cost(r, cfg["costs"])
+        if cost:
+            lbl(box, f"Ингредиенты на готовку: {money(cost)} $", fg=T.MUTED, bg=CARD2, size=8).pack(anchor="w", padx=8)
+        tk.Frame(box, bg=CARD2, height=4).pack()
+
+        # время / мультиготовка
+        mx = MULTI_MAX.get(cfg["kitchen"], 1)
+        sel = min(st["batch"].get(i, 1), mx)
+        box = section(card, "Время", "без ускорений")
+        chips = tk.Frame(box, bg=CARD2)
+        chips.pack(fill="x", padx=6, pady=(2, 6))
+        for b in (1, 2, 3):
+            ok = b <= mx
+            on = b == sel
+            c = tk.Frame(chips, bg=T.ACCENT_DIM if on else ("#24242b" if ok else "#1a1a1f"),
+                         highlightthickness=1, highlightbackground=T.ACCENT if on else T.BORDER,
+                         cursor="hand2" if ok else "")
+            c.pack(side="left", expand=True, fill="x", padx=2)
+            fg = "#ffffff" if on else (T.TEXT if ok else "#4a4a55")
+            mins = multi_minutes(r, b, cfg["kitchen"])
+            for txt, sz, bold in ((f"x{r['yield'] * b} шт", 9, True), (fmt_minutes(mins), 9, False),
+                                  (f"+{r['exp'] * b} EXP", 8, True)):
+                w = tk.Label(c, text=txt, bg=c["bg"], fg=fg if "EXP" not in txt or not ok else (T.OK if on else "#5fbf80"),
+                             font=(F, sz, "bold" if bold else "normal"))
+                w.pack()
+                if ok:
+                    w.bind("<Button-1>", lambda e, b=b: choose_batch(i, b))
+            if ok:
+                c.bind("<Button-1>", lambda e, b=b: choose_batch(i, b))
+        if mx == 1:
+            lbl(box, "Мультиготовка x2 с кухни 3 ур., x3 с кухни 5 ур.", fg=T.MUTED, bg=CARD2, size=8).pack(pady=(0, 4))
+
+        flat_btn(card, "⏱  Поставить таймер", lambda: start_dish_timer(i), accent=True).pack(
+            fill="x", padx=8, pady=8)
+        return card
+
+    def toggle_expand(i):
+        st["expanded"].symmetric_difference_update({i})
+        render_page(keep_scroll=True)
+
+    def choose_batch(i, b):
+        st["batch"][i] = b
+        render_page(keep_scroll=True)
+
+    def render_page(keep_scroll=False):
+        y = canvas.yview()[0] if keep_scroll else 0
+        for c in cards:
+            c.destroy()
+        cards.clear()
+        items = st["items"]
+        pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+        st["page"] = min(st["page"], pages)
+        chunk = items[(st["page"] - 1) * PAGE_SIZE: st["page"] * PAGE_SIZE]
+        for i in chunk:
+            cards.append(make_card(i))
+        layout_cards()
+        canvas.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.yview_moveto(y)
+        # пагинация
+        for w in pager.winfo_children():
+            w.destroy()
+        if pages > 1:
+            def go(p):
+                st["page"] = p
+                render_page()
+            ttk.Button(pager, text="‹", width=3, command=lambda: go(max(1, st["page"] - 1))).pack(side="left", padx=2)
+            for p in range(1, pages + 1):
+                ttk.Button(pager, text=str(p), width=3, style="Accent.TButton" if p == st["page"] else "TButton",
+                           command=lambda p=p: go(p)).pack(side="left", padx=2)
+            ttk.Button(pager, text="›", width=3, command=lambda: go(min(pages, st["page"] + 1))).pack(side="left", padx=2)
+        ttk.Label(pager, text=f"Найдено блюд: {len(items)}", style="Muted.TLabel").pack(side="right", padx=6)
+
+    def refresh():
+        save_settings()
+        st["items"] = filtered()
+        render_page()
+
+    # ================================================================ цены ингредиентов
+    def open_costs():
+        dlg = tk.Toplevel(parent)
+        dlg.title("Цены ингредиентов")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        ttk.Label(dlg, text="Почём ты покупаешь ингредиенты (за 1 шт). Пустое поле - цена не указана.",
+                  style="Muted.TLabel").pack(anchor="w", padx=10, pady=(10, 4))
+        names = {}
+        for r in RECIPES:
+            for name, _, src, _ in r["ingredients"]:
+                names.setdefault(name, src)
+        tv = ttk.Treeview(dlg, columns=("n", "s", "p"), show="headings", height=16)
+        for c, h, w in (("n", "Ингредиент", 200), ("s", "Где взять", 200), ("p", "Цена за 1", 90)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w, anchor="e" if c == "p" else "w")
+        tv.pack(fill="both", expand=True, padx=10)
+
+        def fill():
+            tv.delete(*tv.get_children())
+            for n, (name, src) in enumerate(sorted(names.items())):
+                c = cfg["costs"].get(name)
+                tv.insert("", "end", iid=name, values=(name, src or "—", "" if c is None else money(c)),
+                          tags=("odd",) if n % 2 else ())
+            tv.tag_configure("odd", background=T.FIELD_ALT)
+        fill()
+        bottom = ttk.Frame(dlg)
+        bottom.pack(fill="x", padx=10, pady=10)
+        v = tk.StringVar()
+        ttk.Label(bottom, text="Цена выбранного:").pack(side="left")
+        e = ttk.Entry(bottom, textvariable=v, width=10)
+        e.pack(side="left", padx=6)
+
+        def on_sel(_=None):
+            s_ = tv.selection()
+            if s_:
+                c = cfg["costs"].get(s_[0])
+                v.set("" if c is None else str(c))
+                e.focus_set()
+        tv.bind("<<TreeviewSelect>>", on_sel)
+
+        def save(_=None):
+            s_ = tv.selection()
+            if not s_:
                 return
-        persist_cfg()
-        refresh_list()
-        show_detail()
+            txt = v.get().replace(" ", "").replace(",", ".")
+            if txt == "":
+                cfg["costs"].pop(s_[0], None)
+            else:
+                try:
+                    cfg["costs"][s_[0]] = max(0.0, float(txt))
+                except ValueError:
+                    return
+            persist_cfg()
+            fill()
+            tv.selection_set(s_[0])
+            refresh()
+        e.bind("<Return>", save)
+        ttk.Button(bottom, text="Сохранить", style="Accent.TButton", command=save).pack(side="left")
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
 
-    tree.bind("<<TreeviewSelect>>", lambda e: show_detail())
-
-    # ---------------------------------------------------------------- таймеры
+    # ================================================================ таймеры
     def new_id():
         return max([t["id"] for t in timers] + [0]) + 1
 
-    def add_timer(name, label, minutes):
+    def add_timer(name, img, minutes):
         now = time.time()
-        timers.append({"id": new_id(), "name": name, "label": label, "start": now,
-                       "end": now + minutes * 60, "reminded": False, "done": False})
+        save_settings()
+        timers.append({"id": new_id(), "name": name, "label": cfg["label"], "img": img, "start": now,
+                       "end": now + minutes * 60, "base": minutes * 60, "last_speedup": None,
+                       "speedups": 0, "saved": 0.0, "remind_speedup": cfg["remind_speedup"],
+                       "speedup_key": None, "reminded": False, "done": False})
         persist_timers()
-        redraw_timers()
+        rebuild_timers()
         end = time.strftime("%H:%M", time.localtime(now + minutes * 60))
-        notify(f"Таймер запущен: {name} ({label}), будет готово в {end} "
-               f"(через {fmt_minutes(minutes)})", telegram=False)
+        notify(f"Таймер запущен: {name} ({cfg['label']}), готово в {end}, через {fmt_minutes(minutes)}",
+               telegram=False)
 
-    def add_timer_from_dish():
-        i = selected_recipe()
-        if i is None:
-            status_var.set("Сначала выбери блюдо в таблице")
-            return
+    def start_dish_timer(i):
         r = RECIPES[i]
-        batch = current_batch()
-        accels = max(0, ivar(accel_var, 0))
-        c = calc(r, 1, batch, accels, cfg, cfg["costs"])      # таймер - на одну загрузку
-        add_timer(f"{r['name']} x{c['portions']}", label_var.get().strip() or "-", c["minutes_one"])
+        b = min(st["batch"].get(i, 1), MULTI_MAX.get(cfg["kitchen"], 1))
+        add_timer(f"{r['name']} x{r['yield'] * b}", r.get("img"), multi_minutes(r, b, cfg["kitchen"]))
 
     def add_custom_timer():
-        add_timer(custom_name.get().strip() or "Таймер", "-", max(1, ivar(custom_min, 60)))
+        add_timer("Свой таймер", None, max(1, ivar(custom_min, 60)))
 
-    def delete_timer():
-        s_ = ttree.selection()
-        if not s_:
+    def speedup_ready_in(t, now):
+        if t["last_speedup"] is None:
+            return 0
+        return max(0, t["last_speedup"] + SPEEDUP_GAP - now)
+
+    def do_speedup(tid):
+        t = next((x for x in timers if x["id"] == tid), None)
+        now = time.time()
+        if not t or t["done"] or speedup_ready_in(t, now) > 0:
             return
-        tid = int(s_[0])
+        cut = max(0.0, t["end"] - now) * SPEEDUP_CUT
+        t["end"] -= cut
+        t["saved"] += cut
+        t["speedups"] += 1
+        t["last_speedup"] = now
+        t["reminded"] = False
+        persist_timers()
+        notify(f"Ускорение учтено: -{fmt_minutes(cut / 60)}, {t['name']}", telegram=False)
+        update_timers()
+
+    def correct_timer(tid):
+        t = next((x for x in timers if x["id"] == tid), None)
+        if not t:
+            return
+        left = max(0, int((t["end"] - time.time()) / 60))
+        m = simpledialog.askinteger("Исправить время", "Сколько минут осталось по игре?",
+                                    initialvalue=left, minvalue=0, maxvalue=100000, parent=parent)
+        if m is None:
+            return
+        t["end"] = time.time() + m * 60
+        t["done"] = m == 0 and t["done"]
+        t["reminded"] = False
+        persist_timers()
+        rebuild_timers()
+
+    def restart_timer(tid):
+        t = next((x for x in timers if x["id"] == tid), None)
+        if t:
+            timers.remove(t)
+            add_timer(t["name"], t.get("img"), t["base"] / 60)
+
+    def remove_timer(tid):
         timers[:] = [t for t in timers if t["id"] != tid]
         persist_timers()
-        redraw_timers()
+        rebuild_timers()
 
-    def clear_done():
-        timers[:] = [t for t in timers if not t["done"]]
+    def toggle_speed_remind(tid, var):
+        for t in timers:
+            if t["id"] == tid:
+                t["remind_speedup"] = var.get()
         persist_timers()
-        redraw_timers()
 
-    def redraw_timers():
-        sel = ttree.selection()
-        ttree.delete(*ttree.get_children())
+    def rebuild_timers():
+        for w in tlist.winfo_children():
+            w.destroy()
+        timer_widgets.clear()
+        if not timers:
+            lbl(tlist, "Таймеров нет. Нажми «Поставить таймер» на карточке блюда.", fg=T.MUTED, bg=T.BG,
+                size=9, wraplength=340, justify="left").pack(anchor="w", pady=10)
+            return
+        for t in sorted(timers, key=lambda t: (t["done"], t["end"])):
+            box = tk.Frame(tlist, bg=CARD, highlightthickness=1,
+                           highlightbackground=T.OK if t["done"] else T.BORDER)
+            box.pack(fill="x", pady=4)
+            top_ = tk.Frame(box, bg=CARD)
+            top_.pack(fill="x", padx=8, pady=(8, 2))
+            pic = tk.Label(top_, bg=CARD)
+            pic.pack(side="left")
+            images.set(pic, t.get("img"), 40, t["name"])
+            mid = tk.Frame(top_, bg=CARD)
+            mid.pack(side="left", fill="x", expand=True, padx=8)
+            lbl(mid, t["name"], size=10, bold=True, wraplength=200, justify="left").pack(anchor="w")
+            lbl(mid, f"{t['label']}  ·  готово в " + time.strftime("%H:%M", time.localtime(t["end"])),
+                fg=T.MUTED, size=8).pack(anchor="w")
+            left_lbl = lbl(top_, "", size=12, bold=True)
+            left_lbl.pack(side="right")
+            bar = tk.Canvas(box, height=6, bg="#26262d", highlightthickness=0, bd=0)
+            bar.pack(fill="x", padx=8, pady=(4, 2))
+            fill_ = bar.create_rectangle(0, 0, 0, 6, fill=T.OK if t["done"] else T.ACCENT, width=0)
+            info = lbl(box, "", fg=T.MUTED, size=8)
+            info.pack(anchor="w", padx=8)
+            btns = tk.Frame(box, bg=CARD)
+            btns.pack(fill="x", padx=8, pady=(4, 8))
+            sp = None
+            if t["done"]:
+                flat_btn(btns, "↻ Ещё раз", lambda tid=t["id"]: restart_timer(tid)).pack(side="left")
+            else:
+                sp = flat_btn(btns, "⚡ Ускорить", lambda tid=t["id"]: do_speedup(tid), accent=True)
+                sp.pack(side="left")
+                flat_btn(btns, "✎ Время", lambda tid=t["id"]: correct_timer(tid)).pack(side="left", padx=4)
+                rv = tk.BooleanVar(value=t["remind_speedup"])
+                tk.Checkbutton(btns, text="напоминать", variable=rv, bg=CARD, fg=T.MUTED, selectcolor=T.FIELD,
+                               activebackground=CARD, activeforeground=T.TEXT, bd=0, highlightthickness=0,
+                               font=(F, 8), command=lambda tid=t["id"], v=rv: toggle_speed_remind(tid, v)
+                               ).pack(side="left", padx=4)
+            flat_btn(btns, "✕", lambda tid=t["id"]: remove_timer(tid)).pack(side="right")
+            timer_widgets[t["id"]] = (left_lbl, bar, fill_, info, sp)
+        update_timers()
+
+    def update_timers():
         now = time.time()
-        for t in sorted(timers, key=lambda t: t["end"]):
-            day = "" if time.localtime(t["end"]).tm_yday == time.localtime(now).tm_yday else \
-                time.strftime("%d.%m ", time.localtime(t["end"]))
-            left = "Готово ✓" if t["done"] else fmt_left(t["end"] - now)
-            ttree.insert("", "end", iid=str(t["id"]), tags=("done",) if t["done"] else (), values=(
-                t["name"], t["label"], day + time.strftime("%H:%M", time.localtime(t["end"])), left))
-        for s_ in sel:
-            if ttree.exists(s_):
-                ttree.selection_set(s_)
+        for t in timers:
+            w = timer_widgets.get(t["id"])
+            if not w:
+                continue
+            left_lbl, bar, fill_, info, sp = w
+            try:
+                total = max(1.0, t["end"] - t["start"])
+                frac = 1.0 if t["done"] else min(1.0, max(0.0, (now - t["start"]) / total))
+                width = bar.winfo_width()
+                bar.coords(fill_, 0, 0, width * frac, 6)
+                if t["done"]:
+                    left_lbl.configure(text="Готово ✓", fg=T.OK)
+                else:
+                    left_lbl.configure(text=fmt_left(t["end"] - now), fg=T.TEXT)
+                parts = []
+                if t["speedups"]:
+                    parts.append(f"ускорений: {t['speedups']}, сэкономлено {fmt_minutes(t['saved'] / 60)}")
+                if sp is not None:
+                    wait = speedup_ready_in(t, now)
+                    if wait > 0:
+                        sp.configure(text=f"⚡ через {fmt_left(wait)}", state="disabled",
+                                     bg="#24242b", disabledforeground=T.MUTED)
+                    else:
+                        sp.configure(text="⚡ Ускорить (-15%)", state="normal", bg=T.ACCENT)
+                info.configure(text="  ·  ".join(parts))
+            except tk.TclError:
+                pass
 
     def notify(text, telegram=True):
         status_var.set(time.strftime("%H:%M ") + "".join(ch for ch in text if ord(ch) < 0x10000).strip())
@@ -545,25 +922,35 @@ def build_cooking_tab(parent):
 
     def check_timers(first=False):
         now = time.time()
-        changed = False
+        changed = rebuild = False
         for t in timers:
             if t["done"]:
                 continue
             if now >= t["end"]:
                 t["done"] = True
-                changed = True
+                changed = rebuild = True
                 late = " (пока программа была выключена)" if first and now - t["end"] > 60 else ""
                 notify(f"🍳 Готово: {t['name']} ({t['label']}){late}")
                 beep()
-            elif cfg["remind"] and not t["reminded"] and t["end"] - now <= cfg["remind_min"] * 60 \
+                continue
+            if cfg["remind"] and not t["reminded"] and t["end"] - now <= cfg["remind_min"] * 60 \
                     and t["end"] - t["start"] > cfg["remind_min"] * 60:
                 t["reminded"] = True
                 changed = True
                 notify(f"⏰ Через {cfg['remind_min']} мин будет готово: {t['name']} ({t['label']})")
+            key = t["last_speedup"] or t["start"]
+            if t["remind_speedup"] and now >= key + SPEEDUP_GAP and t["speedup_key"] != key \
+                    and t["end"] - now > 60:
+                t["speedup_key"] = key
+                changed = True
+                notify(f"⚡ Можно ускорить: {t['name']} ({t['label']})")
+                beep()
         if changed:
             persist_timers()
+        if rebuild:
+            rebuild_timers()
 
-    # ---------------------------------------------------------------- Telegram
+    # ================================================================ Telegram
     def tg_connect():
         save_settings()
         token = cfg["token"]
@@ -595,26 +982,36 @@ def build_cooking_tab(parent):
                 ui.put(("tg", f"Ошибка: {ex}"))
         threading.Thread(target=work, daemon=True).start()
 
-    # ---------------------------------------------------------------- цикл
-    def tick():
+    # ================================================================ цикл
+    def pump():
         if not alive["on"]:
             return
         try:
             while True:
-                kind, val = ui.get_nowait()
-                if kind == "chat":
-                    cfg["chat_id"], cfg["chat_name"] = val
+                item = ui.get_nowait()
+                kind = item[0]
+                if kind == "img":
+                    images.arrived(item[1], item[2])
+                elif kind == "chat":
+                    cfg["chat_id"], cfg["chat_name"] = item[1]
                     persist_cfg()
-                    tg_status.set(f"Подключено: {val[1]}")
+                    tg_status.set(f"Подключено: {item[1][1]}")
                 elif kind == "tg":
-                    tg_status.set(val)
+                    tg_status.set(item[1])
                 elif kind == "status":
-                    status_var.set(val)
+                    status_var.set(item[1])
         except queue.Empty:
             pass
+        except tk.TclError:
+            return
+        parent.after(150, pump)
+
+    def tick():
+        if not alive["on"]:
+            return
         try:
             check_timers()
-            redraw_timers()
+            update_timers()
         except tk.TclError:
             return
         parent.after(1000, tick)
@@ -623,9 +1020,10 @@ def build_cooking_tab(parent):
         alive["on"] = False
         persist_timers()
 
-    refresh_list()
+    refresh()
     check_timers(first=True)
-    redraw_timers()
+    rebuild_timers()
+    parent.after(150, pump)
     parent.after(1000, tick)
     return stop
 
