@@ -10,6 +10,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import net
+
 from cooking_data import (RECIPES, PREMIUM_MULT, PREMIUM100_MULT, MULTI_MAX, MULTI_TIME,
                           ACCEL_CUT, ACCEL_GAP_MIN)
 
@@ -141,7 +143,7 @@ def tg_api(token, method, params=None, timeout=15):
     data = urllib.parse.urlencode(params).encode() if params else None
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "MajesticTools"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with net.urlopen(req, timeout=timeout) as r:
             res = json.load(r)
     except urllib.error.HTTPError as e:
         try:

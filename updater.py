@@ -8,6 +8,8 @@ import time
 import subprocess
 import urllib.request
 
+import net
+
 from version import __version__, REPO
 
 ASSET_NAME = "MajesticTools.exe"
@@ -30,7 +32,7 @@ def check():
         raise RuntimeError("эта копия собрана не на GitHub, обновлять неоткуда")
     req = urllib.request.Request(API.format(REPO),
                                  headers=dict(UA, Accept="application/vnd.github+json"))
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with net.urlopen(req, timeout=10) as r:
         data = json.load(r)
     tag = data.get("tag_name", "")
     if parse_ver(tag) <= parse_ver(__version__):
@@ -46,7 +48,7 @@ def download(info, progress=None):
     """Качает новый exe рядом с текущим. Возвращает путь к скачанному."""
     new = sys.executable + ".new"
     req = urllib.request.Request(info["url"], headers=UA)
-    with urllib.request.urlopen(req, timeout=30) as r, open(new, "wb") as f:
+    with net.urlopen(req, timeout=30) as r, open(new, "wb") as f:
         total = info["size"] or int(r.headers.get("Content-Length") or 0)
         got = 0
         while True:
