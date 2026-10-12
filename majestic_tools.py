@@ -49,10 +49,22 @@ def main():
     import updater
     import theme as T
     import switches
+    import license as L
+    import licenseui
+
+    access = {"set": set(L.FREE), "res": None}
+
+    def refresh_access(initial=False):
+        res = L.check()
+        access["res"] = res
+        access["set"] = L.granted(res)
+        if not initial:
+            root.after(0, rebuild_sidebar)
+        return res
 
     updater.cleanup_old()
     root = tk.Tk()
-    root.title(f"Majestic Tools {__version__}")
+    root.title("Очистка оперативки Majestic")
     root.minsize(900, 560)
     T.apply(root)
     root.attributes("-topmost", True)
@@ -84,10 +96,12 @@ def main():
     holder.rowconfigure(0, weight=1)
     holder.columnconfigure(0, weight=1)
     pages, nav = {}, {}
-    for key, *_ in PAGES:
+    PAGES_ALL = PAGES + [("admin", "🔑", "Админка", "Создание и управление ключами")]
+    for key, *_ in PAGES_ALL:
         f = ttk.Frame(holder)
         f.grid(row=0, column=0, sticky="nsew")
         pages[key] = f
+    refresh_access(initial=True)
 
     def select(key):
         for k, (bar, lbl, row) in nav.items():
@@ -97,14 +111,34 @@ def main():
                 w.configure(bg=bg)
             bar.configure(bg=T.ACCENT if on else T.SIDEBAR)
             lbl.configure(fg="#ffffff" if on else T.MUTED)
-        for k, icon, name, sub in PAGES:
+        for k, icon, name, sub in PAGES_ALL:
             if k == key:
-                title_var.set(name)
+                title_var.set(name if access["res"] and access["res"].get("ok") or k in ("ram", "cook", "admin") else name)
                 sub_var.set(sub)
         pages[key].tkraise()
         state["page"] = key
 
     state = {"page": None, "busy": False}
+
+    nav_rows = {}
+
+    def visible_pages():
+        acc = access["set"]
+        out = [p for p in PAGES if p[0] in acc]
+        if L.has_master():
+            out.append(("admin", "🔑", "Админка", "Создание и управление ключами"))
+        return out
+
+    def rebuild_sidebar():
+        has_key = bool(access["res"] and access["res"].get("ok"))
+        root.title(f"Majestic Tools {__version__}" if has_key else "Очистка оперативки Majestic")
+        for w in list(navbox.winfo_children()):
+            w.destroy()
+        nav.clear(); pills.clear(); nav_rows.clear()
+        for key, icon, name, _ in visible_pages():
+            build_nav_row(key, icon, name)
+        cur = state.get("page")
+        select(cur if cur in nav else (visible_pages()[0][0] if visible_pages() else "ram"))
 
     pills = {}
 
@@ -115,8 +149,11 @@ def main():
 
     switches.listen(lambda k, v: root.after(0, lambda: k in pills and paint_pill(k)))
 
-    for key, icon, name, _ in PAGES:
-        row = tk.Frame(side, bg=T.SIDEBAR, cursor="hand2")
+    navbox = tk.Frame(side, bg=T.SIDEBAR)
+    navbox.pack(fill="x")
+
+    def build_nav_row(key, icon, name):
+        row = tk.Frame(navbox, bg=T.SIDEBAR, cursor="hand2")
         row.pack(fill="x", pady=1)
         bar = tk.Frame(row, bg=T.SIDEBAR, width=4)
         bar.pack(side="left", fill="y")
@@ -130,6 +167,7 @@ def main():
             pill.bind("<Button-1>", lambda e, k=key: switches.set_on(k, not switches.is_on(k)))
             paint_pill(key)
         nav[key] = (bar, lbl, row)
+        nav_rows[key] = row
         for w in (row, lbl):
             w.bind("<Button-1>", lambda e, k=key: select(k))
             w.bind("<Enter>", lambda e, k=key: state["page"] != k and nav[k][1].configure(fg=T.TEXT))
@@ -150,11 +188,12 @@ def main():
         ttk.Label(page, text=f"{what} не запустился:\n{ex}", style="Warn.TLabel",
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
-    try:
-        import sewing_bot
-        stops.append(sewing_bot.build_bot_tab(pages["bot"], request_close=close))
-    except Exception as ex:
-        failed(pages["bot"], "Бот", ex)
+    if "bot" in access["set"]:
+        try:
+            import sewing_bot
+            stops.append(sewing_bot.build_bot_tab(pages["bot"], request_close=close))
+        except Exception as ex:
+            failed(pages["bot"], "Бот", ex)
     try:
         import ram_cleaner
         if ram_cleaner.psutil is None:
@@ -167,16 +206,22 @@ def main():
         stops.append(cooking.build_cooking_tab(pages["cook"]))
     except Exception as ex:
         failed(pages["cook"], "Раздел готовки", ex)
+    if "afk" in access["set"]:
+        try:
+            import antiafk
+            stops.append(antiafk.build_antiafk_tab(pages["afk"]))
+        except Exception as ex:
+            failed(pages["afk"], "Анти-АФК", ex)
+    if "fish" in access["set"]:
+        try:
+            import fishing
+            stops.append(fishing.build_fishing_tab(pages["fish"]))
+        except Exception as ex:
+            failed(pages["fish"], "Рыбалка", ex)
     try:
-        import antiafk
-        stops.append(antiafk.build_antiafk_tab(pages["afk"]))
+        licenseui.build_admin_tab(pages["admin"], refresh_access)
     except Exception as ex:
-        failed(pages["afk"], "Анти-АФК", ex)
-    try:
-        import fishing
-        stops.append(fishing.build_fishing_tab(pages["fish"]))
-    except Exception as ex:
-        failed(pages["fish"], "Рыбалка", ex)
+        failed(pages["admin"], "Админка", ex)
 
     # ---------------- низ меню: поверх окон, версия, обновления
     foot = tk.Frame(side, bg=T.SIDEBAR)
@@ -265,7 +310,18 @@ def main():
 
     btn.configure(command=lambda: start_check(True))
     root.protocol("WM_DELETE_WINDOW", close)
-    select("bot")
+    rebuild_sidebar()
+
+    def recheck_loop():
+        import threading as _t
+        def work():
+            try:
+                refresh_access()
+            except Exception:
+                pass
+        _t.Thread(target=work, daemon=True).start()
+        root.after(300000, recheck_loop)      # перепроверка ключа раз в 5 минут
+    root.after(300000, recheck_loop)
     T.dark_titlebar(root)
     root.after(100, pump)
     root.after(1500, lambda: start_check(False))      # тихая проверка при запуске

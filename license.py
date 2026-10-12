@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+"""
+Доступ по ключам. Программа шлёт серверу ключ и отпечаток железа, сервер отвечает,
+какие разделы открыть. Бесплатны всегда: очистка ОЗУ и калькулятор готовки.
+
+Адрес сервера и мастер-ключи вписаны ниже (SERVER_URL, MASTER_KEYS). Мастер-ключи
+можно добавить патчем программы, если потеряешь прежний.
+"""
+import os
+import sys
+import json
+import hashlib
+import platform
+import subprocess
+
+import net                       # общий SSL-клиент (как в updater/cooking)
+import urllib.request
+
+# ВПИШИ сюда адрес своего сервера Render (без слэша на конце):
+SERVER_URL = "https://majestic-license.onrender.com"
+# Мастер-ключи для админки (та же строка, что ADMIN_SECRET на сервере).
+# Можно несколько — запасные. Добавляются патчем программы.
+MASTER_KEYS = [
+    "ВПИШИ_СВОЙ_МАСТЕР_КЛЮЧ",
+]
+
+FREE = {"ram", "cook"}           # всегда доступно без ключа
+LOCKED = ["bot", "afk", "fish"]  # под ключом
+ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка",
+                "ram": "Чистильщик ОЗУ", "cook": "Готовка"}
+
+
+def app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+KEY_PATH = os.path.join(app_dir(), "license_key.txt")      # введённый ключ
+CACHE_PATH = os.path.join(app_dir(), "license_cache.json")  # последний ответ сервера
+
+
+# ================================================================ отпечаток железа
+def _wmic(section, prop):
+    try:
+        out = subprocess.run(["wmic", section, "get", prop], capture_output=True,
+                             text=True, timeout=5, creationflags=0x08000000).stdout
+        vals = [l.strip() for l in out.splitlines()[1:] if l.strip()]
+        return vals[0] if vals else ""
+    except Exception:
+        return ""
+
+
+def hwid():
+    """Короткий стабильный код этого компьютера."""
+    parts = [platform.node(), platform.machine()]
+    if sys.platform == "win32":
+        parts.append(_wmic("csproduct", "UUID"))
+        parts.append(_wmic("cpu", "ProcessorId"))
+        parts.append(_wmic("baseboard", "SerialNumber"))
+        parts.append(os.environ.get("PROCESSOR_IDENTIFIER", ""))
+    parts = [p for p in parts if p and "To be filled" not in p]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8", "ignore")).hexdigest()
+    return digest[:32]
+
+
+def hwid_short():
+    h = hwid().upper()
+    return "-".join(h[i:i + 4] for i in range(0, 16, 4))
+
+
+# ================================================================ ключ на диске
+def load_key():
+    try:
+        with open(KEY_PATH, encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def save_key(key):
+    try:
+        with open(KEY_PATH, "w", encoding="utf-8") as f:
+            f.write(key.strip())
+    except Exception:
+        pass
+
+
+def clear_key():
+    for p in (KEY_PATH, CACHE_PATH):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _load_cache():
+    try:
+        with open(CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_cache(data):
+    try:
+        with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# ================================================================ запрос к серверу
+def _post(path, payload, headers=None, timeout=20):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(SERVER_URL + path, data=data,
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "MajesticTools", **(headers or {})})
+    with net.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def check(key=None):
+    """Спрашивает сервер про ключ. -> dict с ok, accesses, name, reason."""
+    key = (key if key is not None else load_key()).strip()
+    if not key:
+        return {"ok": False, "reason": "no_key", "accesses": []}
+    try:
+        res = _post("/api/check", {"key": key, "hwid": hwid()})
+        res.setdefault("accesses", [])
+        _save_cache({"key": key, "res": res})
+        return res
+    except Exception as ex:
+        # нет связи - разрешаем по последнему удачному ответу этого же ключа
+        cache = _load_cache()
+        if cache.get("key") == key and cache.get("res", {}).get("ok"):
+            res = dict(cache["res"])
+            res["offline"] = True
+            return res
+        return {"ok": False, "reason": "offline", "accesses": [], "error": str(ex)}
+
+
+def granted(res):
+    """Множество разделов, которые можно показать (с учётом бесплатных)."""
+    acc = set(FREE)
+    if res and res.get("ok"):
+        acc |= set(res.get("accesses", []))
+    return acc
+
+
+# ================================================================ админка
+def valid_masters():
+    return [m for m in MASTER_KEYS if m and "ВПИШИ" not in m]
+
+
+def has_master():
+    return bool(valid_masters())
+
+
+def is_master(token):
+    return token.strip() in valid_masters()
+
+
+def admin(path, token, payload=None):
+    req = urllib.request.Request(SERVER_URL + "/api/admin/" + path,
+                                 data=json.dumps(payload or {}).encode("utf-8"),
+                                 headers={"Content-Type": "application/json",
+                                          "X-Admin": token.strip(), "User-Agent": "MajesticTools"},
+                                 method="POST")
+    with net.urlopen(req, timeout=25) as r:
+        return json.load(r)
+
+
+def admin_get(path, token):
+    req = urllib.request.Request(SERVER_URL + "/api/admin/" + path,
+                                 headers={"X-Admin": token.strip(), "User-Agent": "MajesticTools"})
+    with net.urlopen(req, timeout=25) as r:
+        return json.load(r)

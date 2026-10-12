@@ -253,6 +253,12 @@ def build_ram_tab(parent):
     log = lambda m: q.put(m)
     pad = {"padx": 8, "pady": 3}
 
+    try:
+        import licenseui, license as _L
+        kb = licenseui.build_key_bar(parent, lambda: None)
+        kb.grid(row=99, column=0, columnspan=4, sticky="ew", **pad)
+    except Exception:
+        pass
     ram_var = tk.StringVar()
     commit_var = tk.StringVar()
     warn_var = tk.StringVar()
