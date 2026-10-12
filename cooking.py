@@ -256,24 +256,31 @@ class ImageCache:
         return self.placeholders[key]
 
     def set(self, label, img, size, name, bg="#22222a"):
+        """label - виджет Tk; картинка ставится через configure(image=...)."""
+        self.set_to(lambda ph: label.configure(image=ph), img, size, name, bg,
+                    no_pil=lambda: label.configure(text=(name or "?")[:1], width=2))
+
+    def set_to(self, put, img, size, name, bg="#22222a", no_pil=None):
+        """put(photo) - куда поставить картинку (виджет или элемент холста)."""
         if not self.pil:
-            label.configure(text=(name or "?")[:1], width=2)
+            if no_pil:
+                no_pil()
             return
         key = (img, size)
         if key in self.photos:
-            label.configure(image=self.photos[key])
+            put(self.photos[key])
             return
-        label.configure(image=self.placeholder(size, (name or "?")[:1].upper(), bg))
+        put(self.placeholder(size, (name or "?")[:1].upper(), bg))
         if not img or img in self.failed:
             return
         if os.path.exists(self.path(img)):
             try:
                 self.photos[key] = self._load(img, size)
-                label.configure(image=self.photos[key])
+                put(self.photos[key])
             except Exception:
                 self.failed.add(img)
             return
-        self.waiting.setdefault(img, []).append((label, size))
+        self.waiting.setdefault(img, []).append((put, size))
         if img not in self.inflight:
             self.inflight.add(img)
             self.jobs.put(img)
@@ -282,14 +289,14 @@ class ImageCache:
         self.inflight.discard(img)
         if not ok:
             self.failed.add(img)
-        for label, size in self.waiting.pop(img, []):
+        for put, size in self.waiting.pop(img, []):
             if not ok:
                 continue
             try:
                 key = (img, size)
                 if key not in self.photos:
                     self.photos[key] = self._load(img, size)
-                label.configure(image=self.photos[key])
+                put(self.photos[key])
             except Exception:
                 pass
 
@@ -394,42 +401,40 @@ def build_cooking_tab(parent):
     ttk.Checkbutton(row2, text="Бонус за 100 дней Premium (+5.2%)", variable=prem100_var,
                     command=lambda: refresh()).pack(side="left")
 
-    # ---------------------------------------------------------------- сетка карточек
+    # ---------------------------------------------------------------- сетка карточек (рисуется на холсте)
     left = ttk.Frame(parent)
     left.grid(row=1, column=0, sticky="nsew")
     left.rowconfigure(0, weight=1)
     left.columnconfigure(0, weight=1)
-    canvas = tk.Canvas(left, bg=T.BG, highlightthickness=0, bd=0)
+    canvas = tk.Canvas(left, bg=T.BG, highlightthickness=0, bd=0, yscrollincrement=20)
     vsb = ttk.Scrollbar(left, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=vsb.set)
     canvas.grid(row=0, column=0, sticky="nsew")
     vsb.grid(row=0, column=1, sticky="ns")
-    grid_frame = tk.Frame(canvas, bg=T.BG)
-    win = canvas.create_window(0, 0, window=grid_frame, anchor="nw")
-    grid_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
     pager = ttk.Frame(left)
     pager.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-    cards = []
+    resize_job = {"id": None, "w": 0}
 
-    def layout_cards(width=None):
-        width = width or canvas.winfo_width()
-        if width < 50:
+    def on_canvas_resize(e):
+        if abs(e.width - resize_job["w"]) < 4:
             return
-        grid_frame.update_idletasks()
-        cw = max([c.winfo_reqwidth() for c in cards] + [CARD_W])
-        cols = max(1, (width + 10) // (cw + 10))
-        for col in range(8):
-            grid_frame.columnconfigure(col, minsize=cw if col < cols else 0,
-                                       uniform="card" if col < cols else "", weight=0)
-        for n, c in enumerate(cards):
-            c.grid(row=n // cols, column=n % cols, padx=5, pady=5, sticky="nsew")
-        canvas.itemconfigure(win, width=max(width, cols * (cw + 10)))
+        resize_job["w"] = e.width
+        if resize_job["id"]:
+            canvas.after_cancel(resize_job["id"])
+        resize_job["id"] = canvas.after(120, lambda: render_page(keep_scroll=True))
 
-    canvas.bind("<Configure>", lambda e: layout_cards(e.width))
+    canvas.bind("<Configure>", on_canvas_resize)
 
     def wheel_for(cv):
         def on_wheel(e):
-            cv.yview_scroll(int(-e.delta / 120) if e.delta else (1 if e.num == 5 else -1), "units")
+            if e.num == 4:
+                step = -3
+            elif e.num == 5:
+                step = 3
+            else:
+                step = -3 if e.delta > 0 else 3
+            cv.yview_scroll(step, "units")
+            cv.update_idletasks()
         return on_wheel
 
     def bind_wheel(widget, cv):
@@ -439,7 +444,7 @@ def build_cooking_tab(parent):
         widget.bind("<Leave>", lambda e: (cv.unbind_all("<MouseWheel>"), cv.unbind_all("<Button-4>"),
                                           cv.unbind_all("<Button-5>")))
 
-    bind_wheel(left, canvas)
+    bind_wheel(canvas, canvas)
 
     # ---------------------------------------------------------------- правая панель: таймеры
     side = ttk.Frame(parent, width=390)
@@ -528,127 +533,170 @@ def build_cooking_tab(parent):
         return items
 
     # ================================================================ карточка блюда
-    def section(card, title, aside=""):
-        box = tk.Frame(card, bg=CARD2)
-        box.pack(fill="x", padx=8, pady=(6, 0))
-        head = tk.Frame(box, bg=CARD2)
-        head.pack(fill="x", padx=8, pady=(6, 2))
-        lbl(head, title, fg=T.MUTED, bg=CARD2, size=9, bold=True).pack(side="left")
-        if aside:
-            lbl(head, aside, fg=T.MUTED, bg=CARD2, size=9).pack(side="right")
-        return box
+    # ================================================================ карточки на холсте
+    PAD = 12
+    FN = (F, 11, "bold")
+    clicks = {}            # тег -> действие
 
-    def chip(master, text, fg=T.ACCENT, bg=CHIP):
-        return tk.Label(master, text=text, fg=fg, bg=bg, font=(F, 8, "bold"), padx=6, pady=2)
+    def on_click(tag, fn):
+        clicks[tag] = fn
+        canvas.tag_bind(tag, "<Button-1>", lambda e: fn())
+        canvas.tag_bind(tag, "<Enter>", lambda e: canvas.configure(cursor="hand2"))
+        canvas.tag_bind(tag, "<Leave>", lambda e: canvas.configure(cursor=""))
 
-    def make_card(i):
+    def text(x, y, s_, fill=T.TEXT, size=10, bold=False, anchor="nw", width=0, tags=()):
+        return canvas.create_text(x, y, text=s_, fill=fill, anchor=anchor, width=width or None,
+                                  font=(F, size, "bold" if bold else "normal"), tags=tags)
+
+    def bottom(item):
+        return canvas.bbox(item)[3]
+
+    def chip_at(x, y, s_, fg=T.ACCENT, bg=CHIP, tags=(), right=False):
+        t = text(x, y + 3, s_, fill=fg, size=8, bold=True, anchor="ne" if right else "nw", tags=tags)
+        x1, y1, x2, y2 = canvas.bbox(t)
+        r = canvas.create_rectangle(x1 - 6, y1 - 2, x2 + 6, y2 + 2, fill=bg, outline="", tags=tags)
+        canvas.tag_raise(t, r)
+        if right:
+            canvas.move(t, -6, 0)
+            canvas.move(r, -6, 0)
+        return canvas.bbox(r)
+
+    def box_under(x0, y0, y1, w):
+        """Подложка секции; рисуется после содержимого и опускается под него."""
+        rect = canvas.create_rectangle(x0, y0, x0 + w, y1, fill=CARD2, outline="")
+        canvas.tag_lower(rect)
+        return rect
+
+    def draw_card(i, x0, y0):
         r = RECIPES[i]
-        card = tk.Frame(grid_frame, bg=CARD, width=CARD_W, highlightthickness=1,
-                        highlightbackground=T.BORDER, highlightcolor=T.BORDER)
-        card.bind("<Enter>", lambda e: card.configure(highlightbackground=T.ACCENT))
-        card.bind("<Leave>", lambda e: card.configure(highlightbackground=T.BORDER))
-
-        # шапка: картинка, название, способы
-        head = tk.Frame(card, bg=CARD)
-        head.pack(fill="x", padx=8, pady=(8, 0))
-        pic = tk.Label(head, bg=CARD)
-        pic.pack(side="left", anchor="n")
-        images.set(pic, r.get("img"), 76, r["name"])
-        right = tk.Frame(head, bg=CARD)
-        right.pack(side="left", fill="x", expand=True, padx=(8, 0))
-        lbl(right, r["name"], size=11, bold=True, wraplength=CARD_W - 110, justify="left").pack(anchor="w")
-        tags = tk.Frame(right, bg=CARD)
-        tags.pack(anchor="w", pady=(4, 0))
-        for n, m in enumerate(r["methods"].split(", ")):
-            chip(tags, m).grid(row=n // 2, column=n % 2, padx=(0, 4), pady=2, sticky="w")
-
-        # описание: требования, факультет, баффы
-        info = tk.Frame(card, bg=CARD)
-        info.pack(fill="x", padx=10, pady=(6, 0))
-        lbl(info, f"Ранг {r['skill']}+  ·  кухня {r['kitchen']}+", fg=T.MUTED, size=9).pack(side="left")
+        W = CARD_W
+        items_before = set(canvas.find_all())
+        # шапка
+        pic = canvas.create_image(x0 + PAD, y0 + PAD, anchor="nw")
+        images.set_to(lambda ph, it=pic: canvas.itemconfigure(it, image=ph), r.get("img"), 76, r["name"],
+                      no_pil=lambda: None)
+        tx = x0 + PAD + 86
+        name = text(tx, y0 + PAD + 2, r["name"], size=11, bold=True, width=W - PAD - 86 - PAD)
+        y = bottom(name) + 6
+        cx = tx
+        for m in r["methods"].split(", "):
+            bb = chip_at(cx, y, m)
+            cx = bb[2] + 6
+            if cx > x0 + W - 70:
+                cx, y = tx, bb[3] + 4
+        y = max(y + 22, y0 + PAD + 80) + 4
+        # требования и баффы
+        text(x0 + PAD, y + 3, f"Ранг {r['skill']}+  ·  кухня {r['kitchen']}+", fill=T.MUTED, size=9)
         if r["faculty"]:
-            chip(info, "Нужен факультет").pack(side="right")
+            chip_at(x0 + W - PAD, y, "Нужен факультет", right=True)
         else:
-            chip(info, "Факультет не нужен", fg=T.MUTED, bg="#202027").pack(side="right")
-        for b in r["buffs"]:
-            title, desc = BUFFS.get(b, (b, ""))
-            lbl(card, f"✦ {title}: {desc}", fg="#d9a14a", size=8, wraplength=CARD_W - 24,
-                justify="left").pack(anchor="w", padx=10, pady=(4, 0))
+            chip_at(x0 + W - PAD, y, "Факультет не нужен", fg=T.MUTED, bg="#202027", right=True)
+        y += 26
+        for bkey in r["buffs"]:
+            title, desc = BUFFS.get(bkey, (bkey, ""))
+            t = text(x0 + PAD, y, f"✦ {title}: {desc}", fill="#d9a14a", size=8, width=W - 2 * PAD)
+            y = bottom(t) + 4
         if r.get("bar_anywhere"):
-            lbl(card, "Можно продать любому бармену в городе", fg="#d9a14a", size=8).pack(anchor="w", padx=10, pady=(4, 0))
+            t = text(x0 + PAD, y, "Можно продать любому бармену в городе", fill="#d9a14a", size=8)
+            y = bottom(t) + 4
 
         # ингредиенты
-        ings = r["ingredients"]
-        box = section(card, "Ингредиенты", str(len(ings)))
-        show = ings if i in st["expanded"] else ings[:3]
-        for name, qty, src, img in show:
-            row = tk.Frame(box, bg=CARD2)
-            row.pack(fill="x", padx=6, pady=1)
-            p = tk.Label(row, bg=CARD2)
-            p.pack(side="left")
-            images.set(p, img, 26, name, bg="#2a2a32")
-            txt = tk.Frame(row, bg=CARD2)
-            txt.pack(side="left", padx=6)
-            lbl(txt, name, bg=CARD2, size=9, bold=True, wraplength=CARD_W - 120, justify="left").pack(anchor="w")
-            cost = cfg["costs"].get(name)
+        sx, sw = x0 + 8, W - 16
+        top_ = y + 2
+        y = top_ + 8
+        text(sx + 10, y, "Ингредиенты", fill=T.MUTED, size=9, bold=True)
+        text(sx + sw - 10, y, str(len(r["ingredients"])), fill=T.MUTED, size=9, anchor="ne")
+        y += 22
+        ings = r["ingredients"] if i in st["expanded"] else r["ingredients"][:3]
+        for name_, qty, src, img in ings:
+            ic = canvas.create_image(sx + 8, y + 2, anchor="nw")
+            images.set_to(lambda ph, it=ic: canvas.itemconfigure(it, image=ph), img, 26, name_,
+                          bg="#2a2a32", no_pil=lambda: None)
+            t1 = text(sx + 42, y, name_, size=9, bold=True, width=sw - 110)
+            cost = cfg["costs"].get(name_)
             src_short = (src or "—").split(", ")[0] + (" и др." if src and ", " in src else "")
-            sub = src_short + (f"  ·  {money(cost)} $" if cost is not None else "")
-            lbl(txt, sub, fg=T.MUTED, bg=CARD2, size=8, wraplength=CARD_W - 120, justify="left").pack(anchor="w")
-            lbl(row, f"x{qty}", bg=CARD2, size=10, bold=True).pack(side="right", padx=4)
-        if len(ings) > 3:
-            more = lbl(box, ("Свернуть ▴" if i in st["expanded"] else f"Ещё {len(ings) - 3} ▾"),
-                       fg=T.MUTED, bg=CARD2, size=9, cursor="hand2")
-            more.pack(pady=(2, 4))
-            more.bind("<Button-1>", lambda e: toggle_expand(i))
-        else:
-            tk.Frame(box, bg=CARD2, height=4).pack()
+            t2 = text(sx + 42, bottom(t1) + 1, src_short + (f"  ·  {money(cost)} $" if cost is not None else ""),
+                      fill=T.MUTED, size=8, width=sw - 110)
+            text(sx + sw - 10, y + 8, f"x{qty}", size=10, bold=True, anchor="ne")
+            y = max(bottom(t2), y + 30) + 6
+        if len(r["ingredients"]) > 3:
+            tag = f"more{i}"
+            label = "Свернуть ▴" if i in st["expanded"] else f"Ещё {len(r['ingredients']) - 3} ▾"
+            t = text(sx + sw / 2, y, label, fill=T.MUTED, size=9, anchor="n", tags=(tag,))
+            on_click(tag, lambda: toggle_expand(i))
+            y = bottom(t) + 6
+        box_under(sx, top_, y, sw)
+        y += 8
 
         # цена
-        lo, hi = price(r, cfg)
-        box = section(card, "Цена в барах", "за порцию")
+        top_ = y
+        y += 8
+        text(sx + 10, y, "Цена в барах", fill=T.MUTED, size=9, bold=True)
+        text(sx + sw - 10, y, "за порцию", fill=T.MUTED, size=9, anchor="ne")
+        y += 22
         k_std = cfg["quality"] / 100
         k_prem = k_std * PREMIUM_MULT * (PREMIUM100_MULT if cfg["premium100"] else 1)
         for title, k, color in (("Стандарт", k_std, T.TEXT), ("Premium", k_prem, "#ff8a98")):
-            row = tk.Frame(box, bg=CARD2)
-            row.pack(fill="x", padx=8, pady=1)
-            lbl(row, title, fg=T.MUTED, bg=CARD2, size=9).pack(side="left")
-            lbl(row, f"{money(r['std'][0] * k)} – {money(r['std'][1] * k)} $", fg=color, bg=CARD2,
-                size=10, bold=True).pack(side="right")
+            text(sx + 10, y + 1, title, fill=T.MUTED, size=9)
+            text(sx + sw - 10, y, f"{money(r['std'][0] * k)} – {money(r['std'][1] * k)} $", fill=color,
+                 size=10, bold=True, anchor="ne")
+            y += 22
         cost = ingredient_cost(r, cfg["costs"])
         if cost:
-            lbl(box, f"Ингредиенты на готовку: {money(cost)} $", fg=T.MUTED, bg=CARD2, size=8).pack(anchor="w", padx=8)
-        tk.Frame(box, bg=CARD2, height=4).pack()
+            text(sx + 10, y, f"Ингредиенты на готовку: {money(cost)} $", fill=T.MUTED, size=8)
+            y += 18
+        box_under(sx, top_, y + 2, sw)
+        y += 10
 
         # время / мультиготовка
+        top_ = y
+        y += 8
+        text(sx + 10, y, "Время", fill=T.MUTED, size=9, bold=True)
+        text(sx + sw - 10, y, "без ускорений", fill=T.MUTED, size=9, anchor="ne")
+        y += 22
         mx = MULTI_MAX.get(cfg["kitchen"], 1)
         sel = min(st["batch"].get(i, 1), mx)
-        box = section(card, "Время", "без ускорений")
-        chips = tk.Frame(box, bg=CARD2)
-        chips.pack(fill="x", padx=6, pady=(2, 6))
+        cw = (sw - 20 - 8) / 3
         for b in (1, 2, 3):
-            ok = b <= mx
-            on = b == sel
-            c = tk.Frame(chips, bg=T.ACCENT_DIM if on else ("#24242b" if ok else "#1a1a1f"),
-                         highlightthickness=1, highlightbackground=T.ACCENT if on else T.BORDER,
-                         cursor="hand2" if ok else "")
-            c.pack(side="left", expand=True, fill="x", padx=2)
+            ok, on = b <= mx, b == sel
+            bx = sx + 10 + (b - 1) * (cw + 4)
+            tag = f"batch{i}_{b}"
+            tags = (tag,) if ok else ()
+            canvas.create_rectangle(bx, y, bx + cw, y + 58, tags=tags,
+                                    fill=T.ACCENT_DIM if on else ("#24242b" if ok else "#1a1a1f"),
+                                    outline=T.ACCENT if on else T.BORDER)
             fg = "#ffffff" if on else (T.TEXT if ok else "#4a4a55")
             mins = multi_minutes(r, b, cfg["kitchen"])
-            for txt, sz, bold in ((f"x{r['yield'] * b} шт", 9, True), (fmt_minutes(mins), 9, False),
-                                  (f"+{r['exp'] * b} EXP", 8, True)):
-                w = tk.Label(c, text=txt, bg=c["bg"], fg=fg if "EXP" not in txt or not ok else (T.OK if on else "#5fbf80"),
-                             font=(F, sz, "bold" if bold else "normal"))
-                w.pack()
-                if ok:
-                    w.bind("<Button-1>", lambda e, b=b: choose_batch(i, b))
+            text(bx + cw / 2, y + 5, f"x{r['yield'] * b} шт", fill=fg, size=9, bold=True, anchor="n", tags=tags)
+            text(bx + cw / 2, y + 22, fmt_minutes(mins), fill=fg, size=9, anchor="n", tags=tags)
+            text(bx + cw / 2, y + 39, f"+{r['exp'] * b} EXP", size=8, bold=True, anchor="n", tags=tags,
+                 fill=(T.OK if on else "#5fbf80") if ok else "#4a4a55")
             if ok:
-                c.bind("<Button-1>", lambda e, b=b: choose_batch(i, b))
+                on_click(tag, lambda b=b: choose_batch(i, b))
+        y += 66
         if mx == 1:
-            lbl(box, "Мультиготовка x2 с кухни 3 ур., x3 с кухни 5 ур.", fg=T.MUTED, bg=CARD2, size=8).pack(pady=(0, 4))
+            t = text(sx + sw / 2, y, "Мультиготовка: x2 с кухни 3 ур., x3 с кухни 5 ур.", fill=T.MUTED,
+                     size=8, anchor="n")
+            y = bottom(t) + 6
+        box_under(sx, top_, y, sw)
+        y += 10
 
-        flat_btn(card, "⏱  Поставить таймер", lambda: start_dish_timer(i), accent=True).pack(
-            fill="x", padx=8, pady=8)
-        return card
+        # кнопка таймера
+        tag = f"timer{i}"
+        btn = canvas.create_rectangle(x0 + 8, y, x0 + W - 8, y + 36, fill=T.ACCENT, outline="", tags=(tag,))
+        text(x0 + W / 2, y + 18, "⏱  Поставить таймер", fill="#ffffff", size=10, bold=True, anchor="center",
+             tags=(tag,))
+        on_click(tag, lambda: start_dish_timer(i))
+        canvas.tag_bind(tag, "<Enter>", lambda e: (canvas.itemconfigure(btn, fill=T.ACCENT_HOVER),
+                                                   canvas.configure(cursor="hand2")), add="+")
+        canvas.tag_bind(tag, "<Leave>", lambda e: (canvas.itemconfigure(btn, fill=T.ACCENT),
+                                                   canvas.configure(cursor="")), add="+")
+        y += 36 + PAD
+
+        # фон карточки - под всё содержимое
+        bg = canvas.create_rectangle(x0, y0, x0 + W, y, fill=CARD, outline=T.BORDER)
+        canvas.tag_lower(bg)
+        return y - y0
 
     def toggle_expand(i):
         st["expanded"].symmetric_difference_update({i})
@@ -659,20 +707,26 @@ def build_cooking_tab(parent):
         render_page(keep_scroll=True)
 
     def render_page(keep_scroll=False):
-        y = canvas.yview()[0] if keep_scroll else 0
-        for c in cards:
-            c.destroy()
-        cards.clear()
+        y_frac = canvas.yview()[0] if keep_scroll else 0
+        canvas.delete("all")
         items = st["items"]
         pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
         st["page"] = min(st["page"], pages)
         chunk = items[(st["page"] - 1) * PAGE_SIZE: st["page"] * PAGE_SIZE]
-        for i in chunk:
-            cards.append(make_card(i))
-        layout_cards()
-        canvas.update_idletasks()
-        canvas.configure(scrollregion=canvas.bbox("all"))
-        canvas.yview_moveto(y)
+        width = max(canvas.winfo_width(), CARD_W + 20)
+        gap = 12
+        cols = max(1, (width + gap) // (CARD_W + gap))
+        x_start = max(0, (width - (cols * CARD_W + (cols - 1) * gap)) // 2)
+        y = 4
+        for row in range(0, len(chunk), cols):
+            heights = []
+            for c, i in enumerate(chunk[row:row + cols]):
+                heights.append(draw_card(i, x_start + c * (CARD_W + gap), y))
+            y += max(heights) + gap
+        if not chunk:
+            text(width / 2, 60, "Ничего не найдено. Поменяй фильтры.", fill=T.MUTED, size=11, anchor="n")
+        canvas.configure(scrollregion=(0, 0, width, y + 10))
+        canvas.yview_moveto(y_frac)
         # пагинация
         for w in pager.winfo_children():
             w.destroy()
