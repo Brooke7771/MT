@@ -138,49 +138,47 @@ def button_center(img, which):
 # ================================================================ зрение
 
 def find_marker(img):
-    """Ищет плашку с рыбкой: тёмная вытянутая рыбка на ровном светлом квадрате.
-    img - BGR область поиска. -> (cx, cy, size) или None"""
+    """Плашка с рыбкой: тёмная вытянутая рыбка на светлом квадрате. Находит даже когда
+    плашка наполовину обрезана краем причала. img - BGR область поиска. -> (cx, cy, size) или None"""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    b, g, r = [img[:, :, i].astype(np.int16) for i in range(3)]
-    mx = np.maximum(np.maximum(b, g), r)
-    mn = np.minimum(np.minimum(b, g), r)
-    light = (mx > 115) & ((mx - mn < 50) | ((g - np.maximum(r, b)) > 15))
-    dark = (mx < 70).astype(np.uint8)
+    mx = img.max(axis=2)
+    dark = (mx < 70).astype(np.uint8)            # сам силуэт рыбки почти чёрный
     n, lab, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
     H, W = gray.shape
     best = None
     for k in range(1, n):
         x, y, w, h, a = st[k]
-        if not (7 <= w <= 45 and 3 <= h <= 28 and 1.3 <= w / h <= 3.8 and 0.3 < a / (w * h) < 0.85):
+        if not (6 <= w <= 48 and 3 <= h <= 30 and 1.2 <= w / max(1, h) <= 4.5
+                and 0.28 < a / (w * h) < 0.9):
             continue
-        p = max(3, int(w * 0.35))
-        X0, Y0, X1, Y1 = x - p, y - p, x + w + p, y + h + p
-        if X0 < 0 or Y0 < 0 or X1 > W or Y1 > H:
+        p = max(3, int(w * 0.4))
+        X0, Y0, X1, Y1 = max(0, x - p), max(0, y - p), min(W, x + w + p), min(H, y + h + p)
+        ring = gray[Y0:Y1, X0:X1]
+        if ring.size == 0:
             continue
-        ring = np.ones((Y1 - Y0, X1 - X0), bool)
-        ring[p:p + h, p:p + w] = False
-        lr = light[Y0:Y1, X0:X1][ring]
-        if lr.mean() < 0.85:
+        light = float((ring > 120).mean())       # вокруг рыбки - светлая плашка
+        if light < 0.35:
             continue
-        gr = gray[Y0:Y1, X0:X1][ring]
-        if gr.std() > 22:                       # фон плашки ровный, брызги - пёстрые
-            continue
-        score = lr.mean() - gr.std() / 100
+        score = a * light
         if best is None or score > best[0]:
             best = (score, x + w / 2, y + h / 2, w * 1.6)
     return None if best is None else best[1:]
 
 
 def splash_x(img, cx, cy, size):
-    """Центр брызг рядом с плашкой. -> x или None"""
+    """Центр брызг рядом с плашкой (работает только на тёмной воде). -> x или None"""
     H, W = img.shape[:2]
     half = int(size * 6)
     x0, x1 = max(0, int(cx - half)), min(W, int(cx + half))
     y0, y1 = max(0, int(cy - size * 2.5)), min(H, int(cy + size * 2.5))
     win = img[y0:y1, x0:x1]
+    if win.size == 0:
+        return None
     gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY).astype(np.int16)
-    b, g, r = [win[:, :, i].astype(np.int16) for i in range(3)]
-    spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
+    spread = win.max(axis=2).astype(np.int16) - win.min(axis=2).astype(np.int16)
+    # брызги видны, только если фон вокруг тёмный (открытая вода)
+    if gray.mean() > 110:
+        return None
     bright = (gray > 150) & (spread < 40)
     mx0, mx1 = int(cx - size * 0.8) - x0, int(cx + size * 0.8) - x0
     my0, my1 = int(cy - size * 0.8) - y0, int(cy + size * 0.8) - y0
@@ -193,23 +191,49 @@ def splash_x(img, cx, cy, size):
     return x0 + float(np.argmax(sm))
 
 
+class Tracker:
+    """Определяет, куда тянет рыба. Два способа:
+    1) брызги: если видно, в какую сторону от плашки они, тянет в ту сторону (точно);
+    2) движение плашки: плашку тянет в сторону, куда она уезжает (работает везде, в т.ч. у причала).
+    Рыбу держим клавишей в противоположную сторону."""
 
-def direction(screen, zone):
-    """-1: рыба тянет влево, +1: вправо, None: не видно."""
-    x0, y0, x1, y1 = zone
-    z = screen[y0:y1, x0:x1]
-    m = find_marker(z)
-    if not m:
-        return None
-    sx = splash_x(z, *m)
-    if sx is None:
-        return None
-    d = m[0] - sx
-    if abs(d) < m[2] * 0.4:
-        return None
-    return -1 if d < 0 else 1
+    def __init__(self):
+        self.prev_x = None
+        self.prev_t = None
+        self.vel = 0.0
+        self.last_dir = 0
 
+    def reset(self):
+        self.prev_x = None
+        self.prev_t = None
+        self.vel = 0.0
+        self.last_dir = 0
 
+    def update(self, screen, zone, now):
+        x0, y0, x1, y1 = zone
+        z = screen[y0:y1, x0:x1]
+        m = find_marker(z)
+        if m is None:
+            self.prev_x = None
+            return None
+        mx, my, size = m
+        # способ 1 - брызги (точный, но только на открытой воде)
+        sx = splash_x(z, mx, my, size)
+        dir_splash = None
+        if sx is not None and abs(mx - sx) > size * 0.4:
+            dir_splash = -1 if mx < sx else 1      # плашка слева от брызг -> тянет влево
+        # способ 2 - скорость плашки
+        if self.prev_x is not None and now > self.prev_t:
+            v = (mx - self.prev_x) / (now - self.prev_t)
+            self.vel = 0.6 * self.vel + 0.4 * v
+        self.prev_x, self.prev_t = mx, now
+        dir_move = None
+        if abs(self.vel) > 12:                     # px/с
+            dir_move = -1 if self.vel < 0 else 1    # уезжает влево -> тянет влево
+        d = dir_splash if dir_splash is not None else dir_move
+        if d is not None:
+            self.last_dir = d
+        return d
 
 
 # ================================================================ движок
@@ -228,6 +252,7 @@ class Fisher:
         self.e_tries = 0
         self.ui_seen = 0.0
         self.in_fight = False
+        self.tracker = Tracker()
         self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0}
         self.state = "Жду"
 
@@ -312,8 +337,9 @@ class Fisher:
             self.state = "Тяну рыбу"
             if not self.in_fight:
                 self.in_fight = True
+                self.tracker.reset()
                 self.log("Рыба на крючке, тяну")
-            d = direction(shot, cfg["zone"] or sc(ZONE, W, H))
+            d = self.tracker.update(shot, cfg["zone"] or sc(ZONE, W, H), now)
             if d is not None:
                 self.last_seen = now
                 want = "D" if d < 0 else "A"

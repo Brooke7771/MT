@@ -17,7 +17,7 @@ import net                       # общий SSL-клиент (как в update
 import urllib.request
 
 # ВПИШИ сюда адрес своего сервера Render (без слэша на конце):
-SERVER_URL = "https://majestic-license.onrender.com"
+SERVER_URL = "https://mt-server-oyxh.onrender.com"
 # Мастер-ключи для админки (та же строка, что ADMIN_SECRET на сервере).
 # Можно несколько — запасные. Добавляются патчем программы.
 MASTER_KEYS = [
