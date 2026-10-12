@@ -35,6 +35,8 @@ import ctypes
 import numpy as np
 import cv2
 
+import switches
+
 # ================================================================ настройки
 BASE_W, BASE_H = 1920, 1080          # координаты ниже даны для 1920x1080
 NEEDLE = (959, 383)
@@ -643,7 +645,10 @@ class Bot:
         last_mode = None
         try:
             while not ctrl.quit:
-                if not ctrl.binding:
+                if not switches.is_on("bot"):
+                    ctrl.active = False
+                    prev_start = prev_exit = True        # клавиши не срабатывают, пока бот выключен в меню
+                elif not ctrl.binding:
                     k = key_pressed(ctrl.start_vk)
                     if k and not prev_start:
                         ctrl.toggle()
@@ -658,7 +663,8 @@ class Bot:
                     in_game = False
                     e_tries = 0
                     log("СТАРТ" if was_active else "ПАУЗА")
-                    ctrl.status("Работает" if was_active else "Пауза")
+                    ctrl.status("Работает" if was_active else
+                                ("Пауза" if switches.is_on("bot") else "Отключён в меню"))
                 if not ctrl.active:
                     BUSY["on"] = False
                     time.sleep(0.03)
@@ -828,6 +834,9 @@ class Ctrl:
         self._on_exit = on_exit
 
     def toggle(self):
+        if not switches.is_on("bot"):
+            self.status("Отключён в меню")
+            return
         self.active = not self.active
 
     def request_exit(self):

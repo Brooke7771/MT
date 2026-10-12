@@ -25,6 +25,8 @@ import threading
 import numpy as np
 import cv2
 
+import switches
+
 from sewing_bot import (Input, InputI, KeyBdInput, MouseInput, key_pressed, vk_name,
                         SKIP_VKS, BUSY as SEWING_BUSY)
 
@@ -1000,6 +1002,9 @@ def build_antiafk_tab(parent):
             eng["e"].reset()
 
     def toggle():
+        if not switches.is_on("afk") and not ctl["active"]:
+            log("Анти-АФК выключен в боковом меню - сначала включи его там")
+            return
         ctl["active"] = not ctl["active"]
         q.put(("toggled", ctl["active"]))
 
@@ -1045,7 +1050,12 @@ def build_antiafk_tab(parent):
         prev = False
         was_active = False
         while not ctl["quit"]:
-            if not ctl["binding"]:
+            if not switches.is_on("afk"):
+                if ctl["active"]:
+                    ctl["active"] = False
+                    q.put(("toggled", False))
+                prev = True
+            elif not ctl["binding"]:
                 k = key_pressed(cfg["toggle_vk"])
                 if k and not prev:
                     toggle()
@@ -1056,7 +1066,7 @@ def build_antiafk_tab(parent):
                 log("Анти-АФК включён" if was_active else "Анти-АФК выключен")
             now = time.time()
             if not ctl["active"]:
-                ctl["status"] = "Выключен"
+                ctl["status"] = "Выключен" if switches.is_on("afk") else "Отключён в меню"
                 time.sleep(0.1)
                 continue
             fishing_busy = False

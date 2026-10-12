@@ -48,6 +48,7 @@ def main():
     from tkinter import ttk, messagebox
     import updater
     import theme as T
+    import switches
 
     updater.cleanup_old()
     root = tk.Tk()
@@ -105,6 +106,15 @@ def main():
 
     state = {"page": None, "busy": False}
 
+    pills = {}
+
+    def paint_pill(key):
+        on = switches.is_on(key)
+        pills[key].configure(text="ВКЛ" if on else "ВЫКЛ", fg="#3ecf6e" if on else T.MUTED,
+                             bg="#12291a" if on else "#1d1d23")
+
+    switches.listen(lambda k, v: root.after(0, lambda: k in pills and paint_pill(k)))
+
     for key, icon, name, _ in PAGES:
         row = tk.Frame(side, bg=T.SIDEBAR, cursor="hand2")
         row.pack(fill="x", pady=1)
@@ -113,6 +123,12 @@ def main():
         lbl = tk.Label(row, text=f"  {icon}   {name}", bg=T.SIDEBAR, fg=T.MUTED, anchor="w",
                        font=("Segoe UI", 11), padx=10, pady=10, cursor="hand2")
         lbl.pack(side="left", fill="x", expand=True)
+        if key in switches.NAMES:
+            pill = tk.Label(row, font=("Segoe UI", 8, "bold"), padx=7, pady=2, cursor="hand2")
+            pill.pack(side="right", padx=(0, 10))
+            pills[key] = pill
+            pill.bind("<Button-1>", lambda e, k=key: switches.set_on(k, not switches.is_on(k)))
+            paint_pill(key)
         nav[key] = (bar, lbl, row)
         for w in (row, lbl):
             w.bind("<Button-1>", lambda e, k=key: select(k))

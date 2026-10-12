@@ -17,6 +17,8 @@ import threading
 import numpy as np
 import cv2
 
+import switches
+
 from sewing_bot import key_pressed, vk_name, SKIP_VKS, BUSY as SEWING_BUSY
 import antiafk as AF
 
@@ -160,12 +162,18 @@ def build_fishing_tab(parent):
     def persist():
         save_config(cfg)
 
+    def toggle():
+        if not switches.is_on("fish") and not ctl["active"]:
+            log("Рыбалка выключена в боковом меню - сначала включи её там")
+            return
+        ctl["active"] = not ctl["active"]
+
     status_var, info_var = tk.StringVar(value="Выключен"), tk.StringVar()
     st_lbl = ttk.Label(parent, textvariable=status_var, style="Status.TLabel")
     st_lbl.grid(row=0, column=0, columnspan=4, sticky="w", **pad)
     ttk.Label(parent, textvariable=info_var, style="Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", **pad)
     ttk.Button(parent, text="Старт / стоп", style="Accent.TButton",
-               command=lambda: ctl.update(active=not ctl["active"])).grid(row=2, column=0, columnspan=4, sticky="ew", **pad)
+               command=lambda: toggle()).grid(row=2, column=0, columnspan=4, sticky="ew", **pad)
     key_var = tk.StringVar(value=vk_name(cfg["toggle_vk"]))
     ttk.Label(parent, text="Горячая клавиша:").grid(row=3, column=0, sticky="w", **pad)
     ttk.Label(parent, textvariable=key_var, style="Key.TLabel", width=16).grid(row=3, column=1, sticky="w", **pad)
@@ -321,7 +329,10 @@ def build_fishing_tab(parent):
             held = key
 
         while not ctl["quit"]:
-            if not ctl["binding"]:
+            if not switches.is_on("fish"):
+                ctl["active"] = False
+                prev = True
+            elif not ctl["binding"]:
                 k = key_pressed(cfg["toggle_vk"])
                 if k and not prev:
                     ctl["active"] = not ctl["active"]
@@ -333,7 +344,8 @@ def build_fishing_tab(parent):
             if not ctl["active"] or SEWING_BUSY["on"]:
                 hold(None)
                 BUSY["on"] = False
-                ctl["status"] = "Выключен" if not ctl["active"] else "Пауза: работает швейный бот"
+                ctl["status"] = ("Отключён в меню" if not switches.is_on("fish") else "Выключен") \
+                    if not ctl["active"] else "Пауза: работает швейный бот"
                 time.sleep(0.1)
                 continue
             if cfg["focus_only"] and not any(t in AF.foreground_title().lower()
