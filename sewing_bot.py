@@ -76,6 +76,7 @@ UI_CHECK = 0.05
 # ================================================================ ввод
 SC_A, SC_D, SC_SPACE, SC_E = 0x1E, 0x20, 0x39, 0x12
 VK_START, VK_EXIT = 0x6B, 0x6D       # Numpad +, Numpad -
+BUSY = {"on": False}                 # True, пока бот шьёт (анти-АФК в это время молчит)
 
 PUL = ctypes.POINTER(ctypes.c_ulong)
 
@@ -659,6 +660,7 @@ class Bot:
                     log("СТАРТ" if was_active else "ПАУЗА")
                     ctrl.status("Работает" if was_active else "Пауза")
                 if not ctrl.active:
+                    BUSY["on"] = False
                     time.sleep(0.03)
                     continue
 
@@ -667,6 +669,7 @@ class Bot:
                     game, prompt = self.ui_state()
                     last_ui = now
 
+                BUSY["on"] = bool(game)
                 if game:
                     if not in_game:
                         log("Игра открыта, шью")
@@ -708,6 +711,7 @@ class Bot:
                     log("Нажал E")
                 time.sleep(0.05)
         finally:
+            BUSY["on"] = False
             self.keys.release_all()
 
     def debug_shot(self):
