@@ -39,6 +39,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память, которую держит игра"),
     ("cook", "♨", "Готовка", "Калькулятор блюд, таймеры и уведомления в Telegram"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
+    ("fish", "⚓", "Рыбалка", "Тянет рыбу A/D сам, по желанию - забрасывает, подсекает и забирает улов"),
 ]
 
 
@@ -155,6 +156,11 @@ def main():
         stops.append(antiafk.build_antiafk_tab(pages["afk"]))
     except Exception as ex:
         failed(pages["afk"], "Анти-АФК", ex)
+    try:
+        import fishing
+        stops.append(fishing.build_fishing_tab(pages["fish"]))
+    except Exception as ex:
+        failed(pages["fish"], "Рыбалка", ex)
 
     # ---------------- низ меню: поверх окон, версия, обновления
     foot = tk.Frame(side, bg=T.SIDEBAR)

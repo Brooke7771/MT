@@ -1059,9 +1059,15 @@ def build_antiafk_tab(parent):
                 ctl["status"] = "Выключен"
                 time.sleep(0.1)
                 continue
-            if SEWING_BUSY["on"]:
+            fishing_busy = False
+            try:
+                import fishing
+                fishing_busy = fishing.BUSY["on"]
+            except Exception:
+                pass
+            if SEWING_BUSY["on"] or fishing_busy:
                 e.pause(now)
-                ctl["status"] = "Пауза: работает швейный бот"
+                ctl["status"] = "Пауза: работает " + ("швейный бот" if SEWING_BUSY["on"] else "рыбалка")
             elif not game_focused():
                 e.pause(now)
                 ctl["status"] = "Пауза: окно игры не активно"
