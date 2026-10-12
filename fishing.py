@@ -137,32 +137,83 @@ def button_center(img, which):
 
 # ================================================================ зрение
 
-def find_marker(img):
-    """Плашка с рыбкой: тёмная вытянутая рыбка на светлом квадрате. Находит даже когда
-    плашка наполовину обрезана краем причала. img - BGR область поиска. -> (cx, cy, size) или None"""
+def _glyph(img):
+    """Плашка по тёмному силуэту рыбки (серые плашки, и зелёные с тёмной рыбкой)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mx = img.max(axis=2)
-    dark = (mx < 70).astype(np.uint8)            # сам силуэт рыбки почти чёрный
-    n, lab, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
-    H, W = gray.shape
+    for thr in (70, 95):                         # near-black, затем тёмно-зелёный
+        dark = (mx < thr).astype(np.uint8)
+        n, lab, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
+        H, W = gray.shape
+        best = None
+        for k in range(1, n):
+            x, y, w, h, a = st[k]
+            if not (6 <= w <= 60 and 3 <= h <= 40 and 1.2 <= w / max(1, h) <= 4.8
+                    and 0.25 < a / (w * h) < 0.92):
+                continue
+            p = max(3, int(w * 0.4))
+            X0, Y0, X1, Y1 = max(0, x - p), max(0, y - p), min(W, x + w + p), min(H, y + h + p)
+            ring = gray[Y0:Y1, X0:X1]
+            if ring.size == 0:
+                continue
+            light = float((ring > 110).mean())
+            if light < 0.33:
+                continue
+            score = a * light
+            if best is None or score > best[0]:
+                best = (score, x + w / 2, y + h / 2, w * 1.7)
+        if best is not None:
+            return best
+    return None
+
+
+def _green_plate(img):
+    """Зелёная плашка целиком (когда рыбка внутри неё тоже зеленоватая)."""
+    b, g, r = [img[:, :, i].astype(np.int16) for i in range(3)]
+    green = ((g - np.maximum(r, b) > 22) & (g > 70)).astype(np.uint8)
+    green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    n, lab, st, cen = cv2.connectedComponentsWithStats(green, connectivity=8)
     best = None
     for k in range(1, n):
         x, y, w, h, a = st[k]
-        if not (6 <= w <= 48 and 3 <= h <= 30 and 1.2 <= w / max(1, h) <= 4.5
-                and 0.28 < a / (w * h) < 0.9):
+        if not (16 <= w <= 90 and 16 <= h <= 90 and 0.7 < w / h < 1.4 and a > 0.7 * w * h):
             continue
-        p = max(3, int(w * 0.4))
-        X0, Y0, X1, Y1 = max(0, x - p), max(0, y - p), min(W, x + w + p), min(H, y + h + p)
-        ring = gray[Y0:Y1, X0:X1]
-        if ring.size == 0:
-            continue
-        light = float((ring > 120).mean())       # вокруг рыбки - светлая плашка
-        if light < 0.35:
-            continue
-        score = a * light
-        if best is None or score > best[0]:
-            best = (score, x + w / 2, y + h / 2, w * 1.6)
+        if best is None or a > best[0]:
+            best = (a, float(cen[k][0]), float(cen[k][1]), float(w))
+    return best
+
+
+def find_marker(img):
+    a = _glyph(img)
+    b = _green_plate(img)
+    if a and b:
+        best = a if a[0] >= b[0] else b          # у зелёной плашки площадь больше - обычно она ближе/крупнее
+    else:
+        best = a or b
     return None if best is None else best[1:]
+
+
+def fish_heading(sub):
+    """Куда смотрит рыбка внутри плашки: +1 голова справа, -1 слева, 0 не ясно.
+    Голова - толстый конец (силуэт выше), хвост - тонкий."""
+    if sub.size == 0:
+        return 0
+    gi = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    dark = gi < gi.mean() - 16
+    xs = np.nonzero(dark.any(axis=0))[0]
+    if len(xs) < 6:
+        return 0
+    x0, x1 = xs.min(), xs.max()
+    heights = np.array([np.ptp(np.nonzero(dark[:, c])[0]) if dark[:, c].any() else 0
+                        for c in range(x0, x1 + 1)], dtype=float)
+    n = len(heights)
+    if n < 6:
+        return 0
+    lh = heights[:n // 2].mean()
+    rh = heights[n // 2:].mean()
+    if abs(rh - lh) < 1.0:
+        return 0
+    return 1 if rh > lh else -1
 
 
 def splash_x(img, cx, cy, size):
@@ -198,16 +249,14 @@ class Tracker:
     Рыбу держим клавишей в противоположную сторону."""
 
     def __init__(self):
-        self.prev_x = None
-        self.prev_t = None
-        self.vel = 0.0
-        self.last_dir = 0
+        self.reset()
 
     def reset(self):
         self.prev_x = None
         self.prev_t = None
         self.vel = 0.0
         self.last_dir = 0
+        self.last_seen = 0.0
 
     def update(self, screen, zone, now):
         x0, y0, x1, y1 = zone
@@ -215,23 +264,29 @@ class Tracker:
         m = find_marker(z)
         if m is None:
             self.prev_x = None
+            # плашку заслонило удочкой/брызгами - недолго держим прежнее направление
+            if self.last_dir and now - self.last_seen < 0.6:
+                return self.last_dir
             return None
+        self.last_seen = now
         mx, my, size = m
-        # способ 1 - брызги (точный, но только на открытой воде)
+        half = int(size / 2)
+        sub = z[max(0, int(my - half)):int(my + half), max(0, int(mx - half)):int(mx + half)]
+        # способ 1 - куда смотрит сама рыбка (видно всегда, не зависит от фона и размера)
+        dir_fish = fish_heading(sub)
+        # способ 2 - брызги (только на открытой тёмной воде)
         sx = splash_x(z, mx, my, size)
         dir_splash = None
         if sx is not None and abs(mx - sx) > size * 0.4:
-            dir_splash = -1 if mx < sx else 1      # плашка слева от брызг -> тянет влево
-        # способ 2 - скорость плашки
+            dir_splash = -1 if mx < sx else 1
+        # способ 3 - движение плашки
         if self.prev_x is not None and now > self.prev_t:
             v = (mx - self.prev_x) / (now - self.prev_t)
             self.vel = 0.6 * self.vel + 0.4 * v
         self.prev_x, self.prev_t = mx, now
-        dir_move = None
-        if abs(self.vel) > 12:                     # px/с
-            dir_move = -1 if self.vel < 0 else 1    # уезжает влево -> тянет влево
-        d = dir_splash if dir_splash is not None else dir_move
-        if d is not None:
+        dir_move = -1 if self.vel < -12 else 1 if self.vel > 12 else None
+        d = dir_fish or dir_splash or dir_move
+        if d:
             self.last_dir = d
         return d
 
