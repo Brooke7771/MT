@@ -9,3 +9,8 @@ dist/
 *.spec
 cache/
 antiafk_templates/
+
+# личные и лицензионные файлы
+license_key.txt
+license_cache.json
+modules_config.json

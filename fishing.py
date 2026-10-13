@@ -137,21 +137,21 @@ def button_center(img, which):
 
 # ================================================================ зрение
 
-def _glyph(img):
-    """Плашка по тёмному силуэту рыбки (серые плашки, и зелёные с тёмной рыбкой)."""
+def _glyph_all(img, min_w=4):
+    """Кандидаты плашки по тёмному силуэту рыбки на светлом квадрате (включая крошечные дальние)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mx = img.max(axis=2)
-    for thr in (70, 95):                         # near-black, затем тёмно-зелёный
+    H, W = gray.shape
+    out = []
+    for thr in (70, 95):
         dark = (mx < thr).astype(np.uint8)
         n, lab, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
-        H, W = gray.shape
-        best = None
         for k in range(1, n):
             x, y, w, h, a = st[k]
-            if not (6 <= w <= 60 and 3 <= h <= 40 and 1.2 <= w / max(1, h) <= 4.8
+            if not (min_w <= w <= 60 and 2 <= h <= 40 and 1.2 <= w / max(1, h) <= 4.8
                     and 0.25 < a / (w * h) < 0.92):
                 continue
-            p = max(3, int(w * 0.4))
+            p = max(3, int(w * 0.45))
             X0, Y0, X1, Y1 = max(0, x - p), max(0, y - p), min(W, x + w + p), min(H, y + h + p)
             ring = gray[Y0:Y1, X0:X1]
             if ring.size == 0:
@@ -159,38 +159,76 @@ def _glyph(img):
             light = float((ring > 110).mean())
             if light < 0.33:
                 continue
-            score = a * light
-            if best is None or score > best[0]:
-                best = (score, x + w / 2, y + h / 2, w * 1.7)
-        if best is not None:
-            return best
-    return None
+            # вокруг плашки - тёмная вода (не камни/берег): проверяем кольцо побольше
+            q = int(w * 1.6)
+            R0, R1 = max(0, y - q), min(H, y + h + q)
+            C0, C1 = max(0, x - q), min(W, x + w + q)
+            outer = gray[R0:R1, C0:C1]
+            water = float((outer < 70).mean()) if outer.size else 0.0
+            out.append({"x": x + w / 2, "y": y + h / 2, "size": w * 1.7,
+                        "score": a * light * (0.3 + water)})
+        if out:
+            break
+    return out
 
 
-def _green_plate(img):
-    """Зелёная плашка целиком (когда рыбка внутри неё тоже зеленоватая)."""
+def _green_all(img):
     b, g, r = [img[:, :, i].astype(np.int16) for i in range(3)]
     green = ((g - np.maximum(r, b) > 22) & (g > 70)).astype(np.uint8)
     green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     n, lab, st, cen = cv2.connectedComponentsWithStats(green, connectivity=8)
-    best = None
+    out = []
     for k in range(1, n):
         x, y, w, h, a = st[k]
-        if not (16 <= w <= 90 and 16 <= h <= 90 and 0.7 < w / h < 1.4 and a > 0.7 * w * h):
-            continue
-        if best is None or a > best[0]:
-            best = (a, float(cen[k][0]), float(cen[k][1]), float(w))
-    return best
+        if 16 <= w <= 90 and 16 <= h <= 90 and 0.7 < w / h < 1.4 and a > 0.7 * w * h:
+            out.append({"x": float(cen[k][0]), "y": float(cen[k][1]), "size": float(w), "score": float(a) * 1.5})
+    return out
 
 
-def find_marker(img):
-    a = _glyph(img)
-    b = _green_plate(img)
-    if a and b:
-        best = a if a[0] >= b[0] else b          # у зелёной плашки площадь больше - обычно она ближе/крупнее
-    else:
-        best = a or b
-    return None if best is None else best[1:]
+def speck_cloud(img):
+    """Где на тёмной воде самое густое облако мелких брызг. -> (x, y, плотность) или None"""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    spread = img.max(axis=2).astype(np.int16) - img.min(axis=2).astype(np.int16)
+    bright = ((gray > 140) & (spread < 45)).astype(np.uint8)
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    solid = cv2.dilate(cv2.morphologyEx(bright, cv2.MORPH_OPEN, kern), np.ones((5, 5), np.uint8))
+    specks = (bright & (1 - solid)).astype(np.float32)
+    dark = (gray < 60).astype(np.float32)
+    small = cv2.resize(specks, (img.shape[1] // 4, img.shape[0] // 4), interpolation=cv2.INTER_AREA)
+    dsm = cv2.resize(dark, (img.shape[1] // 4, img.shape[0] // 4), interpolation=cv2.INTER_AREA)
+    dens = cv2.GaussianBlur(small, (0, 0), 6) * (0.2 + cv2.GaussianBlur(dsm, (0, 0), 10))
+    _, mxv, _, loc = cv2.minMaxLoc(dens)
+    if mxv < 0.02:
+        return None
+    return loc[0] * 4.0, loc[1] * 4.0, float(mxv)
+
+
+def find_marker(img, near=None, cloud=None):
+    """Плашка с рыбкой. near=(x, y, r) - искать рядом с прошлым местом;
+    cloud=(x, y) - облако брызг (плашка всегда рядом с ним). -> (cx, cy, size) или None"""
+    cands = _glyph_all(img) + _green_all(img)
+    if not cands:
+        return None
+    best, bscore = None, -1e9
+    for c in cands:
+        sc_ = c["score"]
+        if near is not None:
+            # рядом с прошлым местом - бонус, но не запрет: сильная плашка в стороне всё равно победит
+            d = np.hypot(c["x"] - near[0], c["y"] - near[1])
+            if d < near[2]:
+                sc_ *= 1.0 + 1.5 * (1 - d / near[2])
+        if cloud is not None:
+            d = np.hypot(c["x"] - cloud[0], c["y"] - cloud[1])
+            lim = max(60.0, c["size"] * 7)
+            if d > lim * 2.5:
+                sc_ *= 0.15                      # далеко от брызг - почти наверняка камень
+            else:
+                sc_ *= 1.0 + 2.0 * (1 - min(1.0, d / (lim * 2.5)))
+        if sc_ > bscore:
+            best, bscore = c, sc_
+    if best is None:
+        return None
+    return best["x"], best["y"], best["size"]
 
 
 def fish_heading(sub):
@@ -217,27 +255,32 @@ def fish_heading(sub):
 
 
 def splash_x(img, cx, cy, size):
-    """Центр брызг рядом с плашкой (работает только на тёмной воде). -> x или None"""
+    """Центр облака брызг рядом с плашкой. -> x или None.
+    Брызги - это много мелких отдельных капель. Сплошные светлые пятна (белая одежда
+    персонажа, берег, фонари) отбрасываем: оставляем только мелкие яркие точки."""
     H, W = img.shape[:2]
     half = int(size * 6)
     x0, x1 = max(0, int(cx - half)), min(W, int(cx + half))
-    y0, y1 = max(0, int(cy - size * 2.5)), min(H, int(cy + size * 2.5))
+    y0, y1 = max(0, int(cy - size * 1.6)), min(H, int(cy + size * 1.6))   # только на уровне плашки
     win = img[y0:y1, x0:x1]
     if win.size == 0:
         return None
-    gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY).astype(np.int16)
+    gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
     spread = win.max(axis=2).astype(np.int16) - win.min(axis=2).astype(np.int16)
-    # брызги видны, только если фон вокруг тёмный (открытая вода)
-    if gray.mean() > 110:
-        return None
-    bright = (gray > 150) & (spread < 40)
+    bright = ((gray > 140) & (spread < 45)).astype(np.uint8)
+    # сплошное (одежда, бетон) переживает "открытие" крупным ядром, мелкие капли - нет
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    solid = cv2.morphologyEx(bright, cv2.MORPH_OPEN, kern)
+    solid = cv2.dilate(solid, np.ones((5, 5), np.uint8))
+    specks = bright & (1 - solid)
+    # саму плашку убираем
     mx0, mx1 = int(cx - size * 0.8) - x0, int(cx + size * 0.8) - x0
     my0, my1 = int(cy - size * 0.8) - y0, int(cy + size * 0.8) - y0
-    bright[max(0, my0):max(0, my1), max(0, mx0):max(0, mx1)] = False
-    cols = bright.sum(axis=0).astype(float)
-    if cols.sum() < size * 3:
+    specks[max(0, my0):max(0, my1), max(0, mx0):max(0, mx1)] = 0
+    cols = specks.sum(axis=0).astype(float)
+    if cols.sum() < size * 2:
         return None
-    k = max(3, int(size)) | 1
+    k = max(5, int(size * 1.5)) | 1
     sm = np.convolve(cols, np.ones(k) / k, "same")
     return x0 + float(np.argmax(sm))
 
@@ -246,93 +289,177 @@ BG_AREA = (260, 60, 1660, 560)     # область фона (для 1920x1080)
 BG_CUT = 300                       # вырезаем центр +-300 px: там плашка, брызги и персонаж
 
 
-class Tracker:
-    """Куда плывёт рыба: +1 вправо, -1 влево.
-
-    Камера держит плашку ровно в центре экрана, поэтому едет только фон - и едет он
-    в сторону, противоположную рыбе. Сравниваем СОСЕДНИЕ кадры: между ними фон сдвигается
-    на 1-2 пикселя, меньше половины любого повторяющегося узора (соты, гравий), поэтому
-    направление не путается даже у берега. Маленькие сдвиги складываем за последние
-    доли секунды и решаем по сумме, с запасом, чтобы не дёргаться от помех."""
-
-    WINDOW = 0.6           # с: за сколько складываем сдвиги
-    MEMORY = 2.0           # с: сколько держать направление, если фон не читается
-    THRESH = 3.5           # px на 1080p: столько суммарного сдвига нужно для решения
+class PlateTracker:
+    """Ведёт СВОЮ иконку от кадра к кадру: запоминает, как она выглядит, и ищет точно
+    такую же рядом (с точностью до долей пикселя). Чужие плашки других игроков не цепляет.
+    Если иконку на миг закрыло удочкой/игроком - коротко "доводит" её по прежней скорости."""
 
     def __init__(self):
         self.reset()
 
     def reset(self):
+        self.tpl = None            # картинка иконки (серая)
+        self.pos = None            # (x, y, size)
+        self.t = None
+        self.vx = 0.0
+        self.lost_since = None
+
+    def _grab_tpl(self, gray, x, y, size):
+        h = max(6, int(size * 0.45))
+        x0, y0 = int(round(x)) - h, int(round(y)) - h
+        if x0 < 0 or y0 < 0 or x0 + 2 * h >= gray.shape[1] or y0 + 2 * h >= gray.shape[0]:
+            return None
+        return gray[y0:y0 + 2 * h, x0:x0 + 2 * h].copy()
+
+    def update(self, screen, gray, zone, now, k):
+        """-> (x, y, size, точное: bool) или None. x/y - экранные координаты."""
+        if self.tpl is not None and self.pos is not None:
+            x, y, size = self.pos
+            th, tw = self.tpl.shape
+            r = int(max(40 * k, size * 2.5))
+            X0, Y0 = int(max(0, x - tw / 2 - r)), int(max(0, y - th / 2 - r))
+            X1, Y1 = int(min(gray.shape[1], x + tw / 2 + r)), int(min(gray.shape[0], y + th / 2 + r))
+            win = gray[Y0:Y1, X0:X1]
+            if win.shape[0] > th + 2 and win.shape[1] > tw + 2:
+                res = cv2.matchTemplate(win, self.tpl, cv2.TM_CCOEFF_NORMED)
+                _, mx, _, loc = cv2.minMaxLoc(res)
+                if mx > 0.6:
+                    cx, cy = loc
+                    # уточнение до долей пикселя по параболе
+                    dx = 0.0
+                    if 0 < cx < res.shape[1] - 1:
+                        l, c, rr = res[cy, cx - 1], res[cy, cx], res[cy, cx + 1]
+                        den = (l - 2 * c + rr)
+                        if abs(den) > 1e-6:
+                            dx = float(np.clip(0.5 * (l - rr) / den, -0.5, 0.5))
+                    nx = X0 + cx + dx + tw / 2
+                    ny = Y0 + cy + th / 2
+                    if self.t is not None and now > self.t:
+                        self.vx = 0.7 * self.vx + 0.3 * (nx - x) / (now - self.t)
+                    self.pos = (nx, ny, size)
+                    self.t = now
+                    self.lost_since = None
+                    if mx > 0.85:              # медленно обновляем образец (иконка растёт с приближением)
+                        nt = self._grab_tpl(gray, nx, ny, size)
+                        if nt is not None and nt.shape == self.tpl.shape:
+                            self.tpl = cv2.addWeighted(self.tpl, 0.8, nt, 0.2, 0)
+                    return (nx, ny, size, True)
+        # не нашли по образцу - ищем заново (рядом с прошлым местом предпочтительно)
+        x0, y0, x1, y1 = zone
+        near = None
+        if self.pos is not None:
+            near = (self.pos[0] - x0, self.pos[1] - y0, max(80 * k, self.pos[2] * 4))
+        m = find_marker(screen[y0:y1, x0:x1], near=near)
+        if m is not None:
+            nx, ny, size = x0 + m[0], y0 + m[1], m[2]
+            jump = self.pos is not None and np.hypot(nx - self.pos[0], ny - self.pos[1]) > max(80 * k, self.pos[2] * 4)
+            recently = self.lost_since is None or now - self.lost_since < 1.0
+            if jump and recently and self.tpl is not None:
+                m = None                        # скорее всего чужая плашка - подождём свою
+            else:
+                self.tpl = self._grab_tpl(gray, nx, ny, size)
+                self.pos = (nx, ny, size)
+                self.t = now
+                self.vx = 0.0
+                self.lost_since = None
+                return (nx, ny, size, False)
+        if self.lost_since is None:
+            self.lost_since = now
+        if self.pos is not None and now - self.lost_since < 0.5 and self.t is not None:
+            # коротко ведём по прежней скорости (иконку закрыли удочкой)
+            x, y, size = self.pos
+            return (x + self.vx * (now - self.t), y, size, False)
+        return None
+
+
+class Tracker:
+    """Куда плывёт рыба: +1 вправо, -1 влево. Только иконка и фон.
+
+    Скорость рыбы = скорость иконки на экране МИНУС скорость фона (в пикселях в секунду,
+    с учётом реального времени между кадрами). Иконку ведём по образцу (точно до долей
+    пикселя), фон сравниваем между соседними кадрами. Скорость сглаживается (~0.3 с),
+    сторона меняется, только если новая держится 0.2 с. Во время вываживания направление
+    не сбрасывается: если данных нет - держим последнее (отпущенная клавиша = откат)."""
+
+    TAU = 0.3              # с: сглаживание скорости
+    VTH = 3.0              # px/с на 1080p: порог уверенной скорости
+    CONFIRM = 0.2          # с: сколько новая сторона должна держаться для смены
+
+    def __init__(self):
+        self.plate = PlateTracker()
+        self.reset()
+
+    def reset(self):
+        self.plate.reset()
         self.prev = None
-        self.steps = []        # [(t, dx фона в экранных px)]
-        self.splash = []       # [(t, сторона по брызгам: -1/+1)]
+        self.prev_t = None
+        self.prev_plate = None
+        self.v = 0.0
         self.last_dir = 0
+        self.pending = 0
+        self.pending_since = None
         self.last_seen = -1e9
         self.source = "-"
+        self.dbg = {}
 
     @staticmethod
-    def _prep(screen):
-        H, W = screen.shape[:2]
+    def _prep(gray, plate, W):
+        H = gray.shape[0]
         x0, y0, x1, y1 = sc(BG_AREA, W, H)
-        g = cv2.cvtColor(screen[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        g = gray[y0:y1, x0:x1].astype(np.float32)
+        mean = float(g.mean())
+        k = W / BASE_W
         cx = W // 2 - x0
-        cut = int(BG_CUT * W / BASE_W)
-        g[:, max(0, cx - cut):cx + cut] = float(g.mean())
+        g[:, max(0, int(cx - 150 * k)):int(cx + 150 * k)] = mean
+        if plate is not None:
+            px, py, size = plate[:3]
+            r = max(60 * k, size * 4)
+            gx0, gx1 = int(max(0, px - r - x0)), int(min(x1 - x0, px + r - x0))
+            gy0, gy1 = int(max(0, py - r - y0)), int(min(y1 - y0, py + r - y0))
+            if gx1 > gx0 and gy1 > gy0:
+                g[gy0:gy1, gx0:gx1] = mean
         small = cv2.resize(g, (700, max(60, int(g.shape[0] * 700 / g.shape[1]))))
         return small, g.shape[1] / 700.0
 
     def update(self, screen, zone, now):
-        """Два признака, которые подтверждают друг друга (на записях совпали 31 из 31):
-        - фон: вдали камера поворачивает за рыбой, фон едет в обратную сторону;
-        - брызги: у берега камера почти стоит, зато брызги большие; плашка слева от брызг -
-          рыба тянет влево."""
         H, W = screen.shape[:2]
         k = W / BASE_W
-        # 1) фон - сдвиг между соседними кадрами
-        small, scale = self._prep(screen)
-        if self.prev is not None and self.prev.shape == small.shape:
-            (dx, dy), resp = cv2.phaseCorrelate(self.prev, small)
-            if resp > 0.03 and abs(dx) < 40:
-                self.steps.append((now, dx * scale))
-        self.prev = small
-        # 2) брызги - с какой стороны от них плашка
         if zone is None:
             zone = sc(ZONE, W, H)
-        x0, y0, x1, y1 = zone
-        z = screen[y0:y1, x0:x1]
-        m = find_marker(z)
-        if m is not None:
-            sx = splash_x(z, *m)
-            if sx is not None and abs(m[0] - sx) > m[2] * 0.4:
-                self.splash.append((now, -1 if m[0] < sx else 1))
-        for lst in (self.steps, self.splash):
-            while lst and now - lst[0][0] > self.WINDOW:
-                lst.pop(0)
-        bg_total = sum(d for _, d in self.steps)
-        bg_conf = abs(bg_total) / (self.THRESH * k)
-        vote = 0.0
-        weight = 0.0
-        if bg_conf >= 1.0:
-            vote += (-1 if bg_total > 0 else 1) * min(bg_conf, 3.0)
-            weight += min(bg_conf, 3.0)
-        if len(self.splash) >= 3:
-            sp = sum(d for _, d in self.splash) / len(self.splash)
-            if abs(sp) >= 0.5:
-                vote += sp * 2.0
-                weight += abs(sp) * 2.0
-        if weight > 0:
-            score = vote / weight
-            if abs(score) > 0.3:
-                d = 1 if score > 0 else -1
-                if d != self.last_dir:
-                    # смена стороны - только при уверенном перевесе
-                    if not self.last_dir or abs(score) > 0.5:
-                        self.last_dir = d
-                self.last_seen = now
-                self.source = "брызги" if len(self.splash) >= 3 and bg_conf < 1.0 else \
-                              ("фон" if bg_conf >= 1.0 and len(self.splash) < 3 else "фон+брызги")
-        if now - self.last_seen > self.MEMORY:
-            return None
+        gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+        plate = self.plate.update(screen, gray, zone, now, k)
+        small, scale = self._prep(gray, plate, W)
+        dt = None if self.prev_t is None else now - self.prev_t
+        step_v = None
+        if dt and 0 < dt < 0.5 and self.prev is not None and self.prev.shape == small.shape:
+            (dx, dy), resp = cv2.phaseCorrelate(self.prev, small)
+            bg = dx * scale if resp > 0.03 and abs(dx) < 40 else None
+            pl = None
+            if plate is not None and plate[3] and self.prev_plate is not None and self.prev_plate[3]:
+                pl = plate[0] - self.prev_plate[0]
+            if bg is not None or pl is not None:
+                step_v = ((pl or 0.0) - (bg or 0.0)) / dt
+        self.prev, self.prev_t, self.prev_plate = small, now, plate
+        if step_v is not None:
+            a = 1.0 - np.exp(-dt / self.TAU)
+            self.v = (1 - a) * self.v + a * step_v
+            self.last_seen = now
+        vth = self.VTH * k
+        if abs(self.v) > vth:
+            d = 1 if self.v > 0 else -1
+            if not self.last_dir:
+                self.last_dir = d
+            elif d != self.last_dir:
+                if self.pending != d:
+                    self.pending, self.pending_since = d, now
+                elif now - self.pending_since >= self.CONFIRM:
+                    self.last_dir = d
+                    self.pending = 0
+            else:
+                self.pending = 0
+        self.source = "иконка+фон" if plate is not None and plate[3] else "фон"
+        self.dbg = {"marker": None if plate is None else plate[:3], "splash": None, "cloud": None,
+                    "bg": self.v, "bg_conf": abs(self.v) / vth, "sp": 0.0, "sp_n": 0}
         return self.last_dir or None
 
 
@@ -355,6 +482,8 @@ class Fisher:
         self.tracker = Tracker()
         self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0}
         self.state = "Жду"
+        self.dbg = {}
+        self.recorder = None
 
     def hold(self, key):
         if self.held == key:
@@ -415,6 +544,26 @@ class Fisher:
         shot = self.grab()
         H, W = shot.shape[:2]
         now = self.clock()
+        self._last_shot = shot
+        try:
+            self._step(shot, H, W, now)
+        finally:
+            dbg = dict(self.tracker.dbg) if self.state == "Тяну рыбу" else {}
+            dbg.update(state=self.state, held=self.held, dir=self.tracker.last_dir,
+                       source=self.tracker.source, W=W, H=H, t=now)
+            if self.state == "Заброс":
+                cb = cast_bar(shot)
+                if cb:
+                    dbg["cast"] = cb
+            self.dbg = dbg
+            if self.recorder is not None:
+                try:
+                    self.recorder.add(shot, dbg)
+                except Exception:
+                    pass
+
+    def _step(self, shot, H, W, now):
+        cfg = self.cfg
 
         if dialog_on(shot):
             self.hold(None)
@@ -585,8 +734,60 @@ def build_fishing_tab(parent):
     ttk.Button(zr, text="Сбросить", command=lambda: (cfg.update(zone=None), save(), show_zone())).pack(side="left", padx=4)
     ttk.Label(zr, textvariable=zone_var, style="Muted.TLabel").pack(side="left", padx=6)
 
+    dbgf = ttk.LabelFrame(parent, text="Отладка")
+    dbgf.grid(row=7, column=0, columnspan=4, sticky="ew", **pad)
+    ov_var = tk.BooleanVar(value=False)
+    rec_var = tk.BooleanVar(value=False)
+    rec_fight = tk.BooleanVar(value=True)
+    ttk.Checkbutton(dbgf, text="Показывать оверлей поверх игры (что жмёт и что видит бот)",
+                    variable=ov_var, command=lambda: toggle_overlay()).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
+    ttk.Checkbutton(dbgf, text="Записывать отладочное видео", variable=rec_var,
+                    command=lambda: toggle_rec()).grid(row=1, column=0, sticky="w", **pad)
+    ttk.Checkbutton(dbgf, text="только вываживание", variable=rec_fight).grid(row=1, column=1, sticky="w", **pad)
+    rec_info = tk.StringVar(value="")
+    ttk.Label(dbgf, textvariable=rec_info, style="Muted.TLabel", wraplength=640, justify="left").grid(
+        row=2, column=0, columnspan=3, sticky="w", **pad)
+    shared = {"fi": None, "overlay": None}
+
+    def toggle_overlay():
+        if ov_var.get() and shared["overlay"] is None:
+            try:
+                import fishing_debug as FD
+                shared["overlay"] = FD.Overlay(parent.winfo_toplevel())
+            except Exception as ex:
+                log(f"Оверлей не запустился: {ex}")
+                ov_var.set(False)
+        elif not ov_var.get() and shared["overlay"] is not None:
+            shared["overlay"].destroy()
+            shared["overlay"] = None
+
+    def toggle_rec():
+        fi = shared["fi"]
+        if fi is None:
+            return
+        if rec_var.get() and fi.recorder is None:
+            import fishing_debug as FD
+            fi.recorder = FD.Recorder(only_fight=rec_fight.get())
+            rec_info.set(f"Пишу: {fi.recorder.video_path}")
+            log("Отладочная запись включена")
+        elif not rec_var.get() and fi.recorder is not None:
+            r = fi.recorder
+            fi.recorder = None
+            r.close()
+            rec_info.set(f"Сохранено: {r.video_path}  и  {r.csv_path}")
+            log("Отладочная запись сохранена - пришли этот файл для разбора")
+
+    def overlay_tick():
+        try:
+            if shared["overlay"] is not None and shared["fi"] is not None:
+                shared["overlay"].draw(shared["fi"].dbg if ctl["active"] else {})
+            parent.after(70, overlay_tick)
+        except Exception:
+            pass
+    parent.after(500, overlay_tick)
+
     logbox = tk.Text(parent, height=9, width=74, state="disabled", font=("Consolas", 9))
-    logbox.grid(row=6, column=0, columnspan=4, sticky="ew", **pad)
+    logbox.grid(row=8, column=0, columnspan=4, sticky="ew", **pad)
 
     def save():
         for k, var in v.items():
@@ -673,6 +874,7 @@ def build_fishing_tab(parent):
             return np.ascontiguousarray(np.asarray(shot)[:, :, :3]), x0
 
         fi = Fisher(cfg, inp, log, grab, grab_box)
+        shared["fi"] = fi
         prev = False
         was = False
         while not ctl["quit"]:
@@ -743,6 +945,11 @@ def build_fishing_tab(parent):
     def stop():
         ctl["quit"] = True
         ctl["active"] = False
+        fi = shared.get("fi")
+        if fi is not None and fi.recorder is not None:
+            fi.recorder.close()
+        if shared.get("overlay") is not None:
+            shared["overlay"].destroy()
 
     show_zone()
     threading.Thread(target=worker, daemon=True).start()

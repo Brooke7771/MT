@@ -4,3 +4,4 @@ opencv-python
 psutil
 certifi
 pillow
+cryptography
