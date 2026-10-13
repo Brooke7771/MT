@@ -26,7 +26,7 @@ import antiafk as AF
 
 BUSY = {"on": False}            # True, пока идёт рыбалка (анти-АФК в это время молчит)
 CONFIG_PATH = os.path.join(AF.app_dir(), "fishing_config.json")
-ZONE = (500, 250, 1420, 760)                 # где искать плашку с рыбкой на воде (для 1920x1080)
+ZONE = (500, 150, 1420, 760)                 # где искать плашку с рыбкой на воде (для 1920x1080)
 
 
 def default_config():
@@ -242,53 +242,98 @@ def splash_x(img, cx, cy, size):
     return x0 + float(np.argmax(sm))
 
 
+BG_AREA = (260, 60, 1660, 560)     # область фона (для 1920x1080)
+BG_CUT = 300                       # вырезаем центр +-300 px: там плашка, брызги и персонаж
+
+
 class Tracker:
-    """Определяет, куда тянет рыба. Два способа:
-    1) брызги: если видно, в какую сторону от плашки они, тянет в ту сторону (точно);
-    2) движение плашки: плашку тянет в сторону, куда она уезжает (работает везде, в т.ч. у причала).
-    Рыбу держим клавишей в противоположную сторону."""
+    """Куда плывёт рыба: +1 вправо, -1 влево.
+
+    Камера держит плашку ровно в центре экрана, поэтому едет только фон - и едет он
+    в сторону, противоположную рыбе. Сравниваем СОСЕДНИЕ кадры: между ними фон сдвигается
+    на 1-2 пикселя, меньше половины любого повторяющегося узора (соты, гравий), поэтому
+    направление не путается даже у берега. Маленькие сдвиги складываем за последние
+    доли секунды и решаем по сумме, с запасом, чтобы не дёргаться от помех."""
+
+    WINDOW = 0.6           # с: за сколько складываем сдвиги
+    MEMORY = 2.0           # с: сколько держать направление, если фон не читается
+    THRESH = 3.5           # px на 1080p: столько суммарного сдвига нужно для решения
 
     def __init__(self):
         self.reset()
 
     def reset(self):
-        self.prev_x = None
-        self.prev_t = None
-        self.vel = 0.0
+        self.prev = None
+        self.steps = []        # [(t, dx фона в экранных px)]
+        self.splash = []       # [(t, сторона по брызгам: -1/+1)]
         self.last_dir = 0
-        self.last_seen = 0.0
+        self.last_seen = -1e9
+        self.source = "-"
+
+    @staticmethod
+    def _prep(screen):
+        H, W = screen.shape[:2]
+        x0, y0, x1, y1 = sc(BG_AREA, W, H)
+        g = cv2.cvtColor(screen[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        cx = W // 2 - x0
+        cut = int(BG_CUT * W / BASE_W)
+        g[:, max(0, cx - cut):cx + cut] = float(g.mean())
+        small = cv2.resize(g, (700, max(60, int(g.shape[0] * 700 / g.shape[1]))))
+        return small, g.shape[1] / 700.0
 
     def update(self, screen, zone, now):
+        """Два признака, которые подтверждают друг друга (на записях совпали 31 из 31):
+        - фон: вдали камера поворачивает за рыбой, фон едет в обратную сторону;
+        - брызги: у берега камера почти стоит, зато брызги большие; плашка слева от брызг -
+          рыба тянет влево."""
+        H, W = screen.shape[:2]
+        k = W / BASE_W
+        # 1) фон - сдвиг между соседними кадрами
+        small, scale = self._prep(screen)
+        if self.prev is not None and self.prev.shape == small.shape:
+            (dx, dy), resp = cv2.phaseCorrelate(self.prev, small)
+            if resp > 0.03 and abs(dx) < 40:
+                self.steps.append((now, dx * scale))
+        self.prev = small
+        # 2) брызги - с какой стороны от них плашка
+        if zone is None:
+            zone = sc(ZONE, W, H)
         x0, y0, x1, y1 = zone
         z = screen[y0:y1, x0:x1]
         m = find_marker(z)
-        if m is None:
-            self.prev_x = None
-            # плашку заслонило удочкой/брызгами - недолго держим прежнее направление
-            if self.last_dir and now - self.last_seen < 0.6:
-                return self.last_dir
+        if m is not None:
+            sx = splash_x(z, *m)
+            if sx is not None and abs(m[0] - sx) > m[2] * 0.4:
+                self.splash.append((now, -1 if m[0] < sx else 1))
+        for lst in (self.steps, self.splash):
+            while lst and now - lst[0][0] > self.WINDOW:
+                lst.pop(0)
+        bg_total = sum(d for _, d in self.steps)
+        bg_conf = abs(bg_total) / (self.THRESH * k)
+        vote = 0.0
+        weight = 0.0
+        if bg_conf >= 1.0:
+            vote += (-1 if bg_total > 0 else 1) * min(bg_conf, 3.0)
+            weight += min(bg_conf, 3.0)
+        if len(self.splash) >= 3:
+            sp = sum(d for _, d in self.splash) / len(self.splash)
+            if abs(sp) >= 0.5:
+                vote += sp * 2.0
+                weight += abs(sp) * 2.0
+        if weight > 0:
+            score = vote / weight
+            if abs(score) > 0.3:
+                d = 1 if score > 0 else -1
+                if d != self.last_dir:
+                    # смена стороны - только при уверенном перевесе
+                    if not self.last_dir or abs(score) > 0.5:
+                        self.last_dir = d
+                self.last_seen = now
+                self.source = "брызги" if len(self.splash) >= 3 and bg_conf < 1.0 else \
+                              ("фон" if bg_conf >= 1.0 and len(self.splash) < 3 else "фон+брызги")
+        if now - self.last_seen > self.MEMORY:
             return None
-        self.last_seen = now
-        mx, my, size = m
-        half = int(size / 2)
-        sub = z[max(0, int(my - half)):int(my + half), max(0, int(mx - half)):int(mx + half)]
-        # способ 1 - куда смотрит сама рыбка (видно всегда, не зависит от фона и размера)
-        dir_fish = fish_heading(sub)
-        # способ 2 - брызги (только на открытой тёмной воде)
-        sx = splash_x(z, mx, my, size)
-        dir_splash = None
-        if sx is not None and abs(mx - sx) > size * 0.4:
-            dir_splash = -1 if mx < sx else 1
-        # способ 3 - движение плашки
-        if self.prev_x is not None and now > self.prev_t:
-            v = (mx - self.prev_x) / (now - self.prev_t)
-            self.vel = 0.6 * self.vel + 0.4 * v
-        self.prev_x, self.prev_t = mx, now
-        dir_move = -1 if self.vel < -12 else 1 if self.vel > 12 else None
-        d = dir_fish or dir_splash or dir_move
-        if d:
-            self.last_dir = d
-        return d
+        return self.last_dir or None
 
 
 # ================================================================ движок
