@@ -815,7 +815,12 @@ def build_fishing_tab(parent):
         import widgets
         s_ = shared["fi"].stats if shared["fi"] is not None else {}
         k, r = s_.get("kept", 0), s_.get("released", 0)
+        fi = shared["fi"]
+        prog = None
+        if fi is not None and fi.prog and time.time() - fi.prog[-1][0] < 1.0:
+            prog = max(0.0, min(1.0, fi.prog[-1][1] / 520.0))
         return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Поймано",
+                "progress": prog, "held": fi.held if fi is not None else None,
                 "items": [("Забросов", s_.get("casts", 0)), ("Поклёвок", s_.get("bites", 0)),
                           ("Поймано", k + r)]}
     import widgets

@@ -165,20 +165,33 @@ class Dashboard:
     """Считает время работы каждого бота и показывает карточки для текущей страницы."""
 
     def __init__(self, root, parent, before):
-        self.root, self.bar, self.shown = root, StatsBar(parent), None
+        self.root, self.shown = root, None
         self.parent, self.before = parent, before
+        self.views = {}                 # key -> свой блок страницы (у каждого бота он особый)
+        self.cur = None
         self.sess = {}                  # key -> [секунды, последний тик]
         self.last = {}
         self._tick()
 
+    def _view(self, key):
+        if key not in self.views:
+            try:
+                import heroes
+                cls = heroes.HEROES.get(key)
+            except Exception:
+                cls = None
+            self.views[key] = cls(self.parent) if cls else StatsBar(self.parent)
+        return self.views[key]
+
     def show(self, key):
         self.shown = key
+        if self.cur is not None:
+            self.cur.pack_forget()
+            self.cur = None
         if key in PROVIDERS:
-            if not self.bar.winfo_ismapped():
-                self.bar.pack(fill="x", padx=22, pady=(0, 10), before=self.before)
+            self.cur = self._view(key)
+            self.cur.pack(fill="x", padx=22, pady=(0, 10), before=self.before)
             self._push(key)
-        else:
-            self.bar.pack_forget()
 
     def _push(self, key):
         d = self.last.get(key)
@@ -187,11 +200,18 @@ class Dashboard:
         sec = self.sess.get(key, [0.0, None])[0]
         items = list(d["items"])
         rate = d.get("rate_of")
+        rate_val = 0
         if rate:
             val = dict(items).get(rate, 0)
-            items.append(("В час", int(val / (sec / 3600.0)) if sec >= 60 else 0))
-        items.append(("Время", fmt_time(sec)))
-        self.bar.set_data(d["status"], d["active"], items)
+            rate_val = int(val / (sec / 3600.0)) if sec >= 60 else 0
+        view = self._view(key)
+        if isinstance(view, StatsBar):
+            if rate:
+                items.append(("В час", rate_val))
+            items.append(("Время", fmt_time(sec)))
+            view.set_data(d["status"], d["active"], items)
+        else:
+            view.set_data(d, sec, rate_val)
 
     def _tick(self):
         now = time.time()

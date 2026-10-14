@@ -317,6 +317,7 @@ class Engine:
         self.counts = {}
         self.allowed = {}              # вторая клавиша пары доступна?
         self.last = None
+        self.recent = []               # последние нажатые клавиши (для интерфейса)
         self.next_at = now + self._interval()
         self.cycle_at = now
         self.paused_since = None
@@ -327,7 +328,8 @@ class Engine:
     def _interval(self):
         lo, hi = self.cfg["preset"]["interval"]
         lo, hi = max(1, float(lo)), max(1, float(hi))
-        return random.uniform(min(lo, hi), max(lo, hi))
+        self.span = random.uniform(min(lo, hi), max(lo, hi))     # для кольца обратного отсчёта
+        return self.span
 
     def _pair_second(self):
         return {p[1]: p[0] for p in self.cfg["preset"].get("pairs", []) if len(p) == 2}
@@ -356,6 +358,7 @@ class Engine:
         self.inp.action(k, random.uniform(min(lo, hi), max(lo, hi)))
         self.counts[k] = self.counts.get(k, 0) + 1
         self.last = k
+        self.recent = (self.recent + [k])[-7:]
         first, second = self._pair_first(), self._pair_second()
         if k in first:
             self.allowed[first[k]] = True
@@ -998,8 +1001,18 @@ def build_antiafk_tab(parent):
     # ---------------------------------------------------------------- движок в потоке
     eng = {"e": None}
     import widgets
-    widgets.register("afk", lambda: {"active": ctl["active"], "status": ctl["status"],
-                                     "items": [("Нажатий", eng["e"].done if eng["e"] else 0)]})
+
+    def afk_stats():
+        e = eng["e"]
+        left, span, paused = 0.0, 1.0, False
+        if e is not None:
+            paused = e.paused_since is not None
+            left = max(0.0, e.next_at - (e.paused_since if paused else time.time()))
+            span = max(1.0, getattr(e, "span", 1.0))
+        return {"active": ctl["active"], "status": ctl["status"], "left": left, "span": span,
+                "paused": paused, "recent": list(e.recent) if e is not None else [],
+                "items": [("Нажатий", e.done if e is not None else 0)]}
+    widgets.register("afk", afk_stats)
 
     def engine_reset():
         if eng["e"]:
