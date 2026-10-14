@@ -2,22 +2,30 @@
 """Компактный HUD поверх игры: по карточке на каждого работающего бота.
 Окно маленькое, прозрачное для кликов, не берёт фокус и не лезёт в области экрана, которые
 читает бот. Как и оверлей рыбалки, исключено из снимков экрана (WDA_EXCLUDEFROMCAPTURE):
-иначе бот видел бы собственный HUD и ошибался. Показывается только пока игра на переднем плане."""
+иначе бот видел бы собственный HUD и ошибался. Показывается только пока игра на переднем плане.
+У каждого бота свой цвет и своя анимация; карточки плавно выезжают и уходят."""
 import math
 import sys
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 
 import widgets
-from widgets import mix, _rrect, fmt_time
+from widgets import mix, _rrect, fmt_time, ease
 import theme as T
 
 KEY = "#010203"
-CARD = "#15151b"
+CARD = "#13131a"
+EDGE = "#262630"
+TRACK = "#0b0b10"
 ORDER = ["fish", "bot", "afk"]
 TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff"}
+WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
-CW, CH, GAP = 260, 64, 8
+CW, CH, GAP = 284, 92, 10
+STEPS = {"Заброс": 0, "Жду поклёвку": 1, "Тяну рыбу": 2, "Улов": 3}
 
 
 class Hud:
@@ -30,11 +38,14 @@ class Hud:
         self.t0 = time.time()
         self.in_game = False
         self._focus_t = 0.0
+        self.cards = {}                     # key -> состояние анимации карточки
+        self._f8 = None
         self._loop()
 
     def set_enabled(self, on):
         self.enabled = on
         if not on:
+            self.cards.clear()
             self._hide()
 
     def set_side(self, side):
@@ -54,6 +65,7 @@ class Hud:
             pass
         self.cv = tk.Canvas(self.win, width=CW, height=CH, bg=KEY, highlightthickness=0, bd=0)
         self.cv.pack()
+        self._f8 = tkfont.Font(family="Segoe UI", size=8, weight="bold")
         self.win.update_idletasks()
         if sys.platform == "win32":
             try:
@@ -96,8 +108,8 @@ class Hud:
         return self.in_game
 
     # ---- цикл
-    def _items(self):
-        out = []
+    def _active(self):
+        out = {}
         for key in ORDER:
             fn = widgets.PROVIDERS.get(key)
             if not fn:
@@ -107,16 +119,31 @@ class Hud:
             except Exception:
                 continue
             if d.get("active"):
-                out.append((key, d))
+                out[key] = d
         return out
 
     def _loop(self):
         delay = 200
         try:
-            items = self._items() if self.enabled else []
-            if items and self._game_focused():
-                delay = 40
-                self._show(items)
+            act = self._active() if self.enabled else {}
+            now = time.time()
+            for key, d in act.items():
+                c = self.cards.get(key)
+                if c is None:
+                    c = self.cards[key] = {"t_in": now, "t_out": None, "prog": 0.0, "num": 0.0,
+                                           "pulse": 0.0, "last": 0}
+                elif c["t_out"] is not None:
+                    c["t_in"], c["t_out"] = now - 0.1, None
+                c["d"] = d
+            for key, c in list(self.cards.items()):
+                if key not in act:
+                    if c["t_out"] is None:
+                        c["t_out"] = now
+                    elif now - c["t_out"] > 0.35:
+                        del self.cards[key]
+            if self.cards and self._game_focused():
+                delay = 33
+                self._show()
             else:
                 self._hide()
         except tk.TclError:
@@ -128,75 +155,138 @@ class Hud:
         except tk.TclError:
             pass
 
-    def _show(self, items):
+    def _show(self):
         self._ensure()
-        n = len(items)
+        keys = [k for k in ORDER if k in self.cards]
+        n = len(keys)
         h = n * CH + (n - 1) * GAP
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
         x = sw - CW - 20 if self.side == "right" else 20
-        y = int(sh * 0.60) if self.side == "right" else int(sh * 0.58)
+        y = int(sh * 0.58) if self.side == "right" else int(sh * 0.56)
         self.win.geometry(f"{CW}x{h}+{x}+{y}")
         self.cv.configure(height=h)
         self.win.deiconify()
         self.win.attributes("-topmost", True)
         self.cv.delete("all")
-        for i, (key, d) in enumerate(items):
-            self._card(key, d, i * (CH + GAP))
+        for i, key in enumerate(keys):
+            self._card(key, self.cards[key], i * (CH + GAP))
 
-    # ---- карточки
+    # ---- примитивы
     def _txt(self, x, y, s, size=9, bold=False, fill=T.TEXT, anchor="w"):
         self.cv.create_text(x, y, text=s, anchor=anchor, fill=fill,
                             font=("Segoe UI", size, "bold" if bold else "normal"))
 
-    def _key(self, cx, cy, s, lit):
-        _rrect(self.cv, cx - 10, cy - 10, cx + 10, cy + 10, 5, fill=T.ACCENT if lit else "#23232b",
-               outline=T.ACCENT_HOVER if lit else T.BORDER)
-        self._txt(cx, cy, s, 9, True, "#fff" if lit else T.MUTED, "center")
+    def _key(self, cx, cy, s, lit, col):
+        _rrect(self.cv, cx - 11, cy - 11, cx + 11, cy + 11, 6, fill=col if lit else "#1f1f27",
+               outline=mix(col, "#ffffff", 0.3) if lit else EDGE)
+        self._txt(cx, cy, s, 9, True, "#ffffff" if lit else T.MUTED, "center")
 
-    def _card(self, key, d, y0):
-        cv, t = self.cv, time.time() - self.t0
-        y1 = y0 + CH
-        _rrect(cv, 0, y0, CW, y1, 12, fill=CARD, outline=T.BORDER)
-        # пульсирующая точка и заголовок
-        ph = t % 1.6 / 1.6
-        cv.create_oval(14 - 4 - 6 * ph, y0 + 16 - 4 - 6 * ph, 14 + 4 + 6 * ph, y0 + 16 + 4 + 6 * ph,
-                       outline=mix(T.OK, CARD, ph))
-        cv.create_oval(10, y0 + 12, 18, y0 + 20, fill=T.OK, outline="")
-        self._txt(28, y0 + 16, TITLES[key], 9, True)
+    def _pill(self, x, y, text, col):
+        text = text if len(text) <= 20 else text[:19] + "…"
+        w = self._f8.measure(text) + 24
+        _rrect(self.cv, x, y - 10, x + w, y + 10, 10, fill=mix(col, CARD, 0.82), outline=mix(col, CARD, 0.55))
+        self.cv.create_oval(x + 7, y - 3, x + 13, y + 3, fill=col, outline="")
+        self._txt(x + 17, y, text, 8, True, mix(col, "#ffffff", 0.35))
+        return x + w
+
+    def _bar(self, x0, x1, y, frac, col, h=7, glow=True):
+        _rrect(self.cv, x0, y - h / 2, x1, y + h / 2, h / 2, fill=TRACK, outline=EDGE)
+        if frac > 0.01:
+            xe = x0 + max(h, (x1 - x0) * frac)
+            if glow:
+                _rrect(self.cv, x0 - 1, y - h / 2 - 2, xe + 1, y + h / 2 + 2, h / 2 + 2,
+                       fill="", outline=mix(col, CARD, 0.7))
+            _rrect(self.cv, x0, y - h / 2, xe, y + h / 2, h / 2, fill=col, outline="")
+            return xe
+        return x0
+
+    # ---- карточка
+    def _card(self, key, c, y0):
+        cv, d = self.cv, c["d"]
+        now = time.time()
+        col = COLORS[key]
+        # въезд / уход
+        if c["t_out"] is None:
+            k = ease(min(1.0, (now - c["t_in"]) / 0.35))
+        else:
+            k = 1 - ease(min(1.0, (now - c["t_out"]) / 0.3))
+        off = (1 - k) * (CW + 20) * (1 if self.side == "right" else -1)
+        if abs(off) > CW:
+            return
+        t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
-        self._txt(CW - 12, y0 + 16, fmt_time(sec), 9, False, T.MUTED, "e")
         items = dict(d.get("items", []))
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий"}[key]
+        val = items.get(main_label, 0)
+        c["num"] += (val - c["num"]) * 0.25
+        if int(val) != c["last"]:
+            c["last"], c["pulse"] = int(val), now
+        pf = max(0.0, 1 - (now - c["pulse"]) / 0.9)
+        rate = ""
+        if d.get("rate_of") and sec >= 60:
+            rate = f" · {int(items.get(d['rate_of'], 0) / (sec / 3600.0))}/ч"
+        paused = str(d.get("status", "")).startswith("Пауза") or bool(d.get("paused"))
+        ac = WARN if paused else col
+
+        def X(x):
+            return x + off
+        # свечение и тело
+        glow = 0.80 + 0.12 * math.sin(t * 2.2) - 0.25 * pf
+        _rrect(cv, X(-1), y0 - 1, X(CW + 1), y0 + CH + 1, 15, fill="", outline=mix(ac, CARD, glow))
+        _rrect(cv, X(0), y0, X(CW), y0 + CH, 14, fill=CARD, outline=EDGE)
+        _rrect(cv, X(0), y0 + 14, X(4), y0 + CH - 14, 2, fill=ac, outline="")
+        # строка 1: значок, название, время
+        self._txt(X(18), y0 + 20, GLYPH[key], 11, False, ac)
+        self._txt(X(40), y0 + 20, TITLES[key], 10, True)
+        self._txt(X(CW - 14), y0 + 20, fmt_time(sec), 9, False, T.MUTED, "e")
+        # строка 2: визуал бота
+        ry = y0 + 47
         if key == "fish":
-            stage = d.get("status", "")
-            p, held = d.get("progress"), d.get("held")
-            if stage == "Тяну рыбу" and p is not None:
-                _rrect(cv, 12, y0 + 38, 112, y0 + 46, 4, fill="#0a141a", outline="#1c3743")
-                if p > 0.02:
-                    _rrect(cv, 12, y0 + 38, 12 + 100 * p, y0 + 46, 4, fill=mix("#e6b800", T.OK, p), outline="")
-                self._key(132, y0 + 43, "A", held == "A")
-                self._key(156, y0 + 43, "D", held == "D")
+            stage = STEPS.get(d.get("status"), -1)
+            p = d.get("progress")
+            if stage == 2 and p is not None:
+                c["prog"] += (p - c["prog"]) * 0.3
+                xe = self._bar(X(16), X(188), ry, c["prog"], mix("#e6b800", T.OK, c["prog"]), 9)
+                if c["prog"] > 0.02:
+                    cv.create_oval(xe - 3, ry - 3, xe + 3, ry + 3, fill="#ffffff", outline="")
+                self._txt(X(16), ry + 14, f"{int(c['prog'] * 100)}%", 7, True, T.MUTED)
+                held = d.get("held")
+                self._key(X(214), ry, "A", held == "A", ac)
+                self._key(X(244), ry, "D", held == "D", ac)
             else:
-                self._txt(12, y0 + 43, stage or "…", 9, False, T.MUTED)
-            self._txt(CW - 12, y0 + 43, f"поймано {items.get('Поймано', 0)}", 9, True, T.ACCENT_HOVER, "e")
+                c["prog"] = 0.0
+                for i in range(4):
+                    cx = X(24 + i * 78)
+                    if i:
+                        cv.create_line(cx - 78 + 7, ry, cx - 7, ry, fill=ac if i <= stage else EDGE, width=2)
+                    on = i == stage
+                    r = 5 + (1.6 * math.sin(t * 6) if on else 0)
+                    cv.create_oval(cx - r, ry - r, cx + r, ry + r, fill=ac if i <= stage else EDGE, outline="")
         elif key == "bot":
-            self._txt(12, y0 + 43, (d.get("status") or "")[:9], 9, False, T.MUTED)
-            # мини-строчка с бегущей иглой
-            x0, x1 = 78, CW - 100
-            pts = [c for x in range(int(x0), int(x1), 6) for c in (x, y0 + 43 + 3 * math.sin(x / 9.0))]
-            cv.create_line(pts, fill="#3a3040", dash=(4, 4), smooth=True)
-            nx = x0 + (t * 50) % (x1 - x0)
-            done = [c for x in range(int(x0), int(nx), 6) for c in (x, y0 + 43 + 3 * math.sin(x / 9.0))]
+            x0, x1 = 16, CW - 16
+            xs = list(range(x0, x1, 6))
+            base = [q for x in xs for q in (X(x), ry + 5 * math.sin(x / 14.0))]
+            cv.create_line(base, fill=EDGE, width=2, dash=(5, 5), smooth=True)
+            nx = x0 + (t * 70) % (x1 - x0)
+            done = [q for x in xs if x <= nx for q in (X(x), ry + 5 * math.sin(x / 14.0))]
             if len(done) >= 4:
-                cv.create_line(done, fill=T.ACCENT, width=2, smooth=True)
-            cv.create_line(nx, y0 + 34, nx, y0 + 46, fill="#d8d8e0", width=2)
-            self._txt(CW - 12, y0 + 43, f"комплектов {items.get('Комплектов', 0)}", 9, True, T.ACCENT_HOVER, "e")
+                cv.create_line(done, fill=ac, width=3, dash=(9, 4), smooth=True)
+            ny = ry + 5 * math.sin(nx / 14.0)
+            cv.create_line(X(nx), ny - 14, X(nx), ny + 2, fill="#e6e6ee", width=2)
+            cv.create_polygon(X(nx) - 3, ny + 2, X(nx) + 3, ny + 2, X(nx), ny + 9, fill="#e6e6ee", outline="")
         else:
             left, span = d.get("left", 0.0), max(1.0, d.get("span", 1.0))
             frac = min(1.0, max(0.0, 1 - left / span))
-            cx, cy, r = 22, y0 + 43, 11
-            cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=3)
-            cv.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-max(2, 359.9 * frac),
-                          style="arc", outline=T.WARN if d.get("paused") else T.ACCENT, width=3)
+            self._bar(X(16), X(206), ry, frac, mix(ac, "#ffffff", 0.5 * pf), 9)
             m, s = divmod(int(left), 60)
-            self._txt(42, y0 + 43, f"до нажатия {m}:{s:02d}", 9, False, T.MUTED)
-            self._txt(CW - 12, y0 + 43, f"нажатий {items.get('Нажатий', 0)}", 9, True, T.ACCENT_HOVER, "e")
+            self._txt(X(CW - 14), ry, f"{m}:{s:02d}", 13, True, T.TEXT, "e")
+        # строка 3: статус и главная метрика
+        by = y0 + CH - 17
+        self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
+        num = str(int(round(c["num"])))
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий"}[key]
+        right = X(CW - 14)
+        tail = f" {unit}{rate}"
+        self._txt(right, by, tail, 8, False, T.MUTED, "e")
+        w_tail = self._f8.measure(tail) * 0.95
+        self._txt(right - w_tail, by, num, 12, True, mix(ac, "#ffffff", 0.2 + 0.6 * pf), "e")
