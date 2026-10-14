@@ -14,6 +14,33 @@ def master_token():
     return _master["token"]
 
 
+def enable_clipboard(entry):
+    """Копировать/вставить в поле на любой раскладке (Ctrl+V по коду клавиши, не по букве)
+    и меню по правому клику. Без этого на русской/украинской раскладке Tk не вставляет."""
+    import tkinter as tk
+
+    def do(ev_name):
+        entry.event_generate(ev_name)
+        return "break"
+
+    def on_ctrl(e):
+        code = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>"}.get(e.keycode)
+        if code:
+            return do(code)
+        if e.keycode == 65:
+            entry.select_range(0, "end")
+            entry.icursor("end")
+            return "break"
+
+    entry.bind("<Control-KeyPress>", on_ctrl)
+    menu = tk.Menu(entry, tearoff=0)
+    menu.add_command(label="Вставить", command=lambda: entry.event_generate("<<Paste>>"))
+    menu.add_command(label="Копировать", command=lambda: entry.event_generate("<<Copy>>"))
+    menu.add_command(label="Вырезать", command=lambda: entry.event_generate("<<Cut>>"))
+    menu.add_command(label="Выделить всё", command=lambda: (entry.select_range(0, "end"), entry.icursor("end")))
+    entry.bind("<Button-3>", lambda e: (entry.focus_set(), menu.tk_popup(e.x_root, e.y_root)))
+
+
 # ================================================================ панель ввода ключа (вставляется в раздел ОЗУ)
 def build_key_bar(parent, on_change):
     import tkinter as tk
@@ -58,10 +85,18 @@ def build_key_bar(parent, on_change):
     ttk.Label(box, text="Ключ:").grid(row=2, column=0, sticky="w", padx=6)
     ke = ttk.Entry(box, textvariable=key_var, width=30)
     ke.grid(row=2, column=1, sticky="w", padx=4, pady=2)
+    enable_clipboard(ke)
     btns = ttk.Frame(box)
     btns.grid(row=2, column=2, sticky="w")
 
+    def paste_key():
+        try:
+            key_var.set(ke.clipboard_get().strip())
+        except tk.TclError:
+            pass
+
     def apply_key():
+        key_var.set(key_var.get().strip())
         state_var.set("Проверяю ключ...")
 
         def work():
@@ -77,6 +112,7 @@ def build_key_bar(parent, on_change):
         state_var.set(describe(r))
         on_change()
 
+    ttk.Button(btns, text="Вставить", command=paste_key).pack(side="left", padx=2)
     ttk.Button(btns, text="Применить", style="Accent.TButton", command=apply_key).pack(side="left", padx=2)
     ttk.Button(btns, text="Выгрузить ключ", command=remove_key).pack(side="left", padx=2)
 
@@ -112,6 +148,7 @@ def build_admin_tab(parent, refresh_access):
     mv = tk.StringVar(value=_master["token"])
     me = ttk.Entry(login, textvariable=mv, width=40, show="•")
     me.pack(side="left", padx=6)
+    enable_clipboard(me)
     login_status = tk.StringVar(value="")
     ttk.Label(login, textvariable=login_status, style="Muted.TLabel").pack(side="left", padx=6)
 
