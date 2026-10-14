@@ -33,7 +33,8 @@ from sewing_bot import (Input, InputI, KeyBdInput, MouseInput, key_pressed, vk_n
 
 def app_dir():
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        import paths
+        return paths.data_dir()
     return os.path.dirname(os.path.abspath(__file__))
 
 

@@ -23,7 +23,8 @@ STATE_COLORS = {"Тяну рыбу": (60, 200, 255), "Жду поклёвку": 
 
 def _app_dir():
     if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
+        import paths
+        return paths.data_dir()
     return os.path.dirname(os.path.abspath(__file__))
 
 

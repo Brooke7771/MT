@@ -77,23 +77,9 @@ def build_key_bar(parent, on_change):
 
     state_var.set(describe(res))
     ttk.Label(box, textvariable=state_var, wraplength=520, justify="left").grid(
-        row=0, column=0, columnspan=3, sticky="w", padx=6, pady=4)
-    ttk.Label(box, text="Код этого компьютера:").grid(row=1, column=0, sticky="w", padx=6)
-    hv = tk.StringVar(value=L.hwid_short())
-    e = ttk.Entry(box, textvariable=hv, width=24, state="readonly")
-    e.grid(row=1, column=1, sticky="w", padx=4, pady=2)
-    ttk.Label(box, text="Ключ:").grid(row=2, column=0, sticky="w", padx=6)
-    ke = ttk.Entry(box, textvariable=key_var, width=30)
-    ke.grid(row=2, column=1, sticky="w", padx=4, pady=2)
-    enable_clipboard(ke)
-    btns = ttk.Frame(box)
-    btns.grid(row=2, column=2, sticky="w")
-
-    def paste_key():
-        try:
-            key_var.set(ke.clipboard_get().strip())
-        except tk.TclError:
-            pass
+        row=0, column=0, sticky="w", padx=6, pady=4)
+    ttk.Button(box, text="Ввести ключ…", command=lambda: open_dialog()).grid(
+        row=1, column=0, sticky="w", padx=6, pady=(0, 6))
 
     def apply_key():
         key_var.set(key_var.get().strip())
@@ -112,10 +98,40 @@ def build_key_bar(parent, on_change):
         state_var.set(describe(r))
         on_change()
 
-    ttk.Button(btns, text="Вставить", command=paste_key).pack(side="left", padx=2)
-    ttk.Button(btns, text="Применить", style="Accent.TButton", command=apply_key).pack(side="left", padx=2)
-    ttk.Button(btns, text="Выгрузить ключ", command=remove_key).pack(side="left", padx=2)
+    def open_dialog():
+        """Ввод ключа спрятан в отдельное окно: в основном разделе виден только статус."""
+        dlg = tk.Toplevel(box)
+        dlg.title("Ключ")
+        dlg.transient(box.winfo_toplevel())
+        dlg.resizable(False, False)
+        try:
+            dlg.configure(bg=T.BG)
+        except Exception:
+            pass
+        f = ttk.Frame(dlg)
+        f.pack(padx=14, pady=12)
+        ttk.Label(f, textvariable=state_var, wraplength=380, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(f, text="Код этого компьютера:").grid(row=1, column=0, sticky="w")
+        hv = tk.StringVar(value=L.hwid_short())
+        ttk.Entry(f, textvariable=hv, width=24, state="readonly").grid(row=1, column=1, sticky="w", padx=6, pady=2)
+        ttk.Label(f, text="Ключ:").grid(row=2, column=0, sticky="w")
+        ke = ttk.Entry(f, textvariable=key_var, width=30)
+        ke.grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        enable_clipboard(ke)
+        ke.focus_set()
 
+        def paste_key():
+            try:
+                key_var.set(ke.clipboard_get().strip())
+            except tk.TclError:
+                pass
+        btns = ttk.Frame(f)
+        btns.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Button(btns, text="Вставить", command=paste_key).pack(side="left", padx=2)
+        ttk.Button(btns, text="Применить", style="Accent.TButton", command=apply_key).pack(side="left", padx=2)
+        ttk.Button(btns, text="Выгрузить ключ", command=remove_key).pack(side="left", padx=2)
+        ke.bind("<Return>", lambda e: apply_key())
     def pump():
         try:
             r = q.get_nowait()
