@@ -43,6 +43,41 @@ def dark_titlebar(root):
         pass
 
 
+_IMGS = []
+
+
+def _switch_style(st):
+    """Флажки в виде современных переключателей (картинки рисуются через Pillow).
+    Нет Pillow - остаётся обычный вид темы."""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except Exception:
+        return
+
+    def make(on):
+        S, w, h, gap = 4, 36, 20, 8
+        im = Image.new("RGBA", ((w + gap) * S, h * S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle((0, 0, w * S - 1, h * S - 1), radius=h * S // 2,
+                            fill=ACCENT if on else "#2a2a33")
+        r = h * S // 2 - 3 * S
+        cx = w * S - h * S // 2 if on else h * S // 2
+        cy = h * S // 2
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill="#ffffff" if on else "#8c8c99")
+        return ImageTk.PhotoImage(im.resize((w + gap, h), Image.LANCZOS))
+
+    try:
+        off, on = make(False), make(True)
+        _IMGS[:] = [off, on]                    # держим ссылки, иначе картинки пропадут
+        st.element_create("Switch.indicator", "image", off, ("selected", on))
+        st.layout("TCheckbutton", [("Checkbutton.padding", {"sticky": "nswe", "children": [
+            ("Switch.indicator", {"side": "left", "sticky": ""}),
+            ("Checkbutton.focus", {"side": "left", "sticky": "w", "children": [
+                ("Checkbutton.label", {"sticky": "nswe"})]})]})])
+    except Exception:
+        pass
+
+
 def apply(root):
     from tkinter import ttk
 
@@ -90,6 +125,7 @@ def apply(root):
            bordercolor=[("active", ACCENT_HOVER)], lightcolor=[("active", ACCENT_HOVER)],
            darkcolor=[("active", ACCENT_HOVER)])
 
+    _switch_style(st)
     st.configure("TCheckbutton", background=BG, foreground=TEXT, indicatorbackground=FIELD,
                  indicatorforeground="#ffffff", indicatorrelief="flat", padding=2)
     st.map("TCheckbutton", background=[("active", BG)],

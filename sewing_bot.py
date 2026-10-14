@@ -866,6 +866,9 @@ def build_bot_tab(parent, request_close=None):
 
     pad = {"padx": 8, "pady": 4}
     status_var = tk.StringVar(value="Пауза")
+    import widgets
+    widgets.register("bot", lambda: {"active": ctrl.active, "status": status_var.get(), "rate_of": "Комплектов",
+                                     "items": [("Комплектов", ctrl.done)]})
     status_lbl = ttk.Label(parent, textvariable=status_var, style="Status.TLabel")
     status_lbl.grid(row=0, column=0, columnspan=3, sticky="w", **pad)
     ttk.Button(parent, text="Старт / пауза", style="Accent.TButton", command=ctrl.toggle).grid(

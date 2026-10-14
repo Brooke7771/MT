@@ -997,6 +997,9 @@ def build_antiafk_tab(parent):
 
     # ---------------------------------------------------------------- движок в потоке
     eng = {"e": None}
+    import widgets
+    widgets.register("afk", lambda: {"active": ctl["active"], "status": ctl["status"],
+                                     "items": [("Нажатий", eng["e"].done if eng["e"] else 0)]})
 
     def engine_reset():
         if eng["e"]:

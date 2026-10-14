@@ -811,6 +811,16 @@ def build_fishing_tab(parent):
         row=2, column=0, columnspan=3, sticky="w", **pad)
     shared = {"fi": None, "overlay": None}
 
+    def stats_provider():
+        import widgets
+        s_ = shared["fi"].stats if shared["fi"] is not None else {}
+        k, r = s_.get("kept", 0), s_.get("released", 0)
+        return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Поймано",
+                "items": [("Забросов", s_.get("casts", 0)), ("Поклёвок", s_.get("bites", 0)),
+                          ("Поймано", k + r)]}
+    import widgets
+    widgets.register("fish", stats_provider)
+
     def toggle_overlay():
         if ov_var.get() and shared["overlay"] is None:
             try:

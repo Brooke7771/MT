@@ -90,7 +90,10 @@ def main():
     title_var, sub_var = tk.StringVar(), tk.StringVar()
     ttk.Label(header, textvariable=title_var, font=T.FONT_TITLE).pack(anchor="w")
     ttk.Label(header, textvariable=sub_var, style="Muted.TLabel").pack(anchor="w")
-    tk.Frame(main_area, bg=T.ACCENT, height=2).pack(fill="x", padx=22, pady=(10, 6))
+    line_box = tk.Frame(main_area, bg=T.BORDER, height=2)
+    line_box.pack(fill="x", padx=22, pady=(10, 10))
+    line_acc = tk.Frame(line_box, bg=T.ACCENT)
+    line_acc.place(relx=0, rely=0, relwidth=1, relheight=1)
 
     holder = ttk.Frame(main_area)
     holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
@@ -102,6 +105,8 @@ def main():
         f = ttk.Frame(holder)
         f.grid(row=0, column=0, sticky="nsew")
         pages[key] = f
+    import widgets
+    dash = widgets.Dashboard(root, main_area, before=holder)
     refresh_access(initial=True)
 
     def select(key):
@@ -117,7 +122,10 @@ def main():
                 title_var.set(name if access["res"] and access["res"].get("ok") or k in ("ram", "cook", "admin") else name)
                 sub_var.set(sub)
         pages[key].tkraise()
+        if state["page"] != key:
+            widgets.tween(root, "line", lambda t: line_acc.place(relx=0, rely=0, relwidth=t, relheight=1), 380)
         state["page"] = key
+        dash.show(key)
 
     state = {"page": None, "busy": False}
 
@@ -153,6 +161,22 @@ def main():
     navbox = tk.Frame(side, bg=T.SIDEBAR)
     navbox.pack(fill="x")
 
+    def hover(k, on):
+        """Плавная подсветка пункта меню под курсором (активный пункт не трогаем)."""
+        if k not in nav or state["page"] == k:
+            return
+        bar, lbl, row = nav[k]
+        a, b = (T.SIDEBAR, "#17171d") if on else ("#17171d", T.SIDEBAR)
+        fa, fb = (T.MUTED, T.TEXT) if on else (T.TEXT, T.MUTED)
+
+        def fn(t):
+            if state["page"] == k:
+                return
+            for w in (row, lbl):
+                w.configure(bg=widgets.mix(a, b, t))
+            lbl.configure(fg=widgets.mix(fa, fb, t))
+        widgets.tween(root, "nav" + k, fn, 140)
+
     def build_nav_row(key, icon, name):
         row = tk.Frame(navbox, bg=T.SIDEBAR, cursor="hand2")
         row.pack(fill="x", pady=1)
@@ -171,8 +195,8 @@ def main():
         nav_rows[key] = row
         for w in (row, lbl):
             w.bind("<Button-1>", lambda e, k=key: select(k))
-            w.bind("<Enter>", lambda e, k=key: state["page"] != k and nav[k][1].configure(fg=T.TEXT))
-            w.bind("<Leave>", lambda e, k=key: state["page"] != k and nav[k][1].configure(fg=T.MUTED))
+            w.bind("<Enter>", lambda e, k=key: hover(k, True))
+            w.bind("<Leave>", lambda e, k=key: hover(k, False))
 
     stops = []
 
