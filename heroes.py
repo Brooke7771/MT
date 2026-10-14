@@ -9,7 +9,7 @@ import time
 import tkinter as tk
 
 import theme as T
-from widgets import mix, _rrect, fmt_time
+from widgets import mix, _rrect, fmt_time, chart_range
 
 CARD = "#17171d"
 FONT = "Segoe UI"
@@ -24,7 +24,12 @@ class Hero(tk.Canvas):
         self.sec, self.rate = 0.0, 0
         self.t0 = time.time()
         self.vals = {}                  # подпись -> {t: цель, s: показано, f: время вспышки}
+        self.intro = 0.0                # когда начался «въезд» блока (replay)
         self._loop()
+
+    def replay(self):
+        """Блок заново «въезжает» справа (зовётся при открытии страницы)."""
+        self.intro = time.time()
 
     # ---- данные
     def set_data(self, d, sec, rate):
@@ -53,7 +58,11 @@ class Hero(tk.Canvas):
         try:
             if self.winfo_ismapped():
                 self.draw()
-            self.after(33 if self.d.get("active") else 80, self._loop)
+                k = (time.time() - self.intro) / 0.5
+                if k < 1.0:
+                    e = 1 - (1 - max(0.0, k)) ** 3
+                    self.move("all", (1 - e) * 90, 0)        # въезд справа, за границу Canvas обрезается
+            self.after(12 if self.d.get("active") else 80, self._loop)
         except tk.TclError:
             pass
 
@@ -86,9 +95,12 @@ class Hero(tk.Canvas):
         self.create_oval(x - 5, y - 5, x + 5, y + 5, fill=col, outline=col)
         self.text(x + 16, y, status, 10, True, T.TEXT if active else T.MUTED)
 
-    def counter_card(self, x0, x1, big_label, extra):
-        """Правая карточка: крупный счётчик и мелкие значения. extra - [(подпись, текст)]."""
+    def counter_card(self, x0, x1, big_label, extra, life=None):
+        """Правая карточка: крупный счётчик и мелкие значения. extra - [(подпись, текст)].
+        life - накопленное «за всё время» (рисуется справа от главного числа)."""
         self.card(x0, x1)
+        if life is not None:
+            self.text(x1 - 18, 66, f"всего {life}", 9, False, T.MUTED, "e")
         f = self.flash(big_label)
         self.create_rectangle(x0 + 1, 18, x0 + 4, self.H - 18, fill=mix(T.ACCENT, T.ACCENT_HOVER, f), outline="")
         self.label(x0 + 18, 24, big_label)
@@ -189,7 +201,7 @@ class FishHero(Hero):
         rate = f"{self.rate}"
         extra = [("Забросов", str(self.shown("Забросов"))), ("Поклёвок", str(self.shown("Поклёвок"))),
                  ("В час", rate), ("Время", fmt_time(self.sec))]
-        self.counter_card(sw + 10, W, "Поймано", extra)
+        self.counter_card(sw + 10, W, "Поймано", extra, (d.get("life") or {}).get("count"))
 
 
 # ====================================================================== швейный бот
@@ -235,7 +247,7 @@ class SewHero(Hero):
         self.create_line(needle, ny - 32 + bob, needle - 24, ny - 52, needle - 60, ny - 40,
                          fill=T.ACCENT_HOVER, smooth=True)
         extra = [("В час", str(self.rate)), ("Время", fmt_time(self.sec))]
-        self.counter_card(sw + 10, W, "Комплектов", extra)
+        self.counter_card(sw + 10, W, "Комплектов", extra, (d.get("life") or {}).get("count"))
 
 
 # ====================================================================== анти-АФК
@@ -289,7 +301,231 @@ class AfkHero(Hero):
             self.text(x0 + 18, 66, "пока ничего", 10, False, T.MUTED)
         self.dot_status(x0 + 22, 112, act, d.get("status") or "Выключен")
         # счётчик
-        self.counter_card(x1 + 10, W, "Нажатий", [("Время", fmt_time(self.sec))])
+        self.counter_card(x1 + 10, W, "Нажатий", [("Время", fmt_time(self.sec))],
+                          (d.get("life") or {}).get("count"))
 
 
-HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero}
+# ====================================================================== чистильщик ОЗУ
+class RamHero(Hero):
+    H = 156
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        pct = d.get("pct", 0.0)
+        hist = d.get("hist") or []
+        hot = pct >= 90
+        col = T.WARN if hot else (T.ACCENT if pct >= 75 else T.OK)
+        busy = d.get("busy")
+        # --- кольцо загрузки
+        rw = 190
+        self.card(0, rw)
+        cx, cy, r = rw / 2, H / 2 - 2, 48
+        shown = self.vals.setdefault("_pct", {"t": pct, "s": pct, "f": 0.0})
+        shown["t"] = pct
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=9)
+        self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-max(2, 3.599 * shown["s"]),
+                        style="arc", outline=col, width=9)
+        if busy:
+            a = (t * 220) % 360
+            self.create_arc(cx - r - 8, cy - r - 8, cx + r + 8, cy + r + 8, start=a, extent=70, style="arc",
+                            outline=T.ACCENT_HOVER, width=3)
+        self.text(cx, cy - 6, f"{int(round(shown['s']))}%", 22, True, T.TEXT, "center")
+        self.text(cx, cy + 18, "ОЗУ", 8, True, T.MUTED, "center")
+        # --- график
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Загрузка памяти")
+        self.text(x1 - 18, 24, f"{d.get('used', 0):.1f} из {d.get('total', 0):.1f} ГБ", 9, True, T.TEXT, "e")
+        gx0, gx1, gy0, gy1 = x0 + 18, x1 - 18, 44, H - 22
+        for frac in (0.25, 0.5, 0.75):
+            y = gy1 - (gy1 - gy0) * frac
+            self.create_line(gx0, y, gx1, y, fill="#1f1f27", dash=(3, 5))
+        if len(hist) >= 2:
+            n = len(hist)
+            lo, hi = chart_range(hist)
+            pts = []
+            for i, v in enumerate(hist):
+                pts += [gx0 + (gx1 - gx0) * i / max(1, n - 1), gy1 - (gy1 - gy0) * (v - lo) / (hi - lo)]
+            self.text(gx0 + 4, gy0 + 6, f"{hi:.0f}%", 7, False, T.MUTED)
+            self.text(gx0 + 4, gy1 - 8, f"{lo:.0f}%", 7, False, T.MUTED)
+            if max(hist) - min(hist) >= 1.0:                     # почти ровная линия - без заливки
+                self.create_polygon(pts + [gx1, gy1, gx0, gy1], fill=mix(CARD, col, 0.2), outline="")
+            self.create_line(pts, fill=col, width=2, smooth=True)
+            ex, ey = pts[-2], pts[-1]
+            ph = t % 1.4 / 1.4
+            self.create_oval(ex - 3 - 8 * ph, ey - 3 - 8 * ph, ex + 3 + 8 * ph, ey + 3 + 8 * ph,
+                             outline=mix(col, CARD, ph))
+            self.create_oval(ex - 3, ey - 3, ex + 3, ey + 3, fill="#ffffff", outline="")
+            self.text(gx1, gy1 + 12, "сейчас", 7, False, T.MUTED, "e")
+            self.text(gx0, gy1 + 12, f"{len(hist) * 2 // 60} мин назад" if len(hist) >= 30 else "", 7, False, T.MUTED)
+        else:
+            self.text((gx0 + gx1) / 2, (gy0 + gy1) / 2, "Собираю данные…", 10, False, T.MUTED, "center")
+        # --- освобождено
+        self.card(x1 + 10, W)
+        f = self.flash("Освобождено")
+        self.create_rectangle(x1 + 11, 18, x1 + 14, H - 18, fill=mix(T.ACCENT, T.ACCENT_HOVER, f), outline="")
+        self.label(x1 + 28, 24, "Освобождено")
+        mb = self.shown("Освобождено")
+        big = f"{mb / 1024:.1f} ГБ" if mb >= 1024 else f"{mb} МБ"
+        self.text(x1 + 28, 62, big, 26, True, mix(T.ACCENT_HOVER, "#ffffff", 1 - (1 - f) ** 2))
+        lt = d.get("last_t") or 0
+        self.text(x1 + 28, 90, "последней очисткой" if lt else "очисток ещё не было", 8, False, T.MUTED)
+        self.label(x1 + 28, 112, "Выделено")
+        self.text(x1 + 28, 128, f"{d.get('cpct', 0):.0f}%", 11, True, T.WARN if d.get("cpct", 0) > 90 else T.TEXT)
+        self.label(x1 + 28 + (W - x1 - 40) / 2, 112, "Пик")
+        self.text(x1 + 28 + (W - x1 - 40) / 2, 128, f"{max(hist) if hist else 0:.0f}%", 11, True)
+
+    def _loop(self):
+        v = self.vals.get("_pct")
+        if v:
+            v["s"] += (v["t"] - v["s"]) * 0.12
+        super()._loop()
+
+
+# ====================================================================== готовка
+class CookHero(Hero):
+    H = 150
+
+    def _steam(self, cx, base, col, n=3):
+        """Кастрюля и поднимающийся пар (клубы растут и тают)."""
+        t = self.t()
+        _rrect(self, cx - 26, base - 2, cx + 26, base + 26, 7, fill="#1f1f27", outline=EDGE_C)
+        self.create_line(cx - 30, base - 2, cx + 30, base - 2, fill=EDGE_C, width=3)
+        self.create_oval(cx - 4, base - 9, cx + 4, base - 3, fill="#2a2a34", outline="")
+        self.create_line(cx - 26, base + 8, cx - 33, base + 8, fill=EDGE_C, width=3)
+        self.create_line(cx + 26, base + 8, cx + 33, base + 8, fill=EDGE_C, width=3)
+        for i in range(n):
+            ph = (t * 0.5 + i / n) % 1
+            x = cx + (i - 1) * 14 + 5 * math.sin(t * 2 + i * 2.1)
+            y = base - 12 - 44 * ph
+            r = 3 + 6 * ph
+            self.create_oval(x - r, y - r, x + r, y + r, outline=mix(col, CARD, ph ** 0.6), width=2)
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        now = time.time()
+        timers = d.get("timers") or []
+        act = sorted([x for x in timers if not x.get("done")], key=lambda x: x["end"])
+        done = [x for x in timers if x.get("done")]
+        # --- кольцо ближайшего таймера
+        rw = 190
+        self.card(0, rw)
+        cx, cy, r = rw / 2, H / 2 - 2, 46
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=9)
+        if act:
+            x = act[0]
+            total = max(1.0, x["end"] - x["start"])
+            left = max(0.0, x["end"] - now)
+            frac = 1 - left / total
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-max(2, 359.9 * frac), style="arc",
+                            outline=T.ACCENT, width=9)
+            m, s = divmod(int(left), 60)
+            h, m = divmod(m, 60)
+            self.text(cx, cy - 6, f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}", 16, True, T.TEXT, "center")
+            self.text(cx, cy + 16, "до готовности", 8, False, T.MUTED, "center")
+        else:
+            self._steam(cx, cy + 14, T.MUTED)
+            self.text(cx, H - 16, "плита свободна", 8, False, T.MUTED, "center")
+        # --- список таймеров
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Таймеры")
+        rows = (act + done)[:3]
+        if not rows:
+            self.text((x0 + x1) / 2, H / 2 + 6, "Таймеров нет: поставь на карточке блюда", 10, False, T.MUTED, "center")
+        for i, x in enumerate(rows):
+            y = 52 + i * 32
+            ok = x.get("done")
+            total = max(1.0, x["end"] - x["start"])
+            frac = 1.0 if ok else min(1.0, max(0.0, 1 - (x["end"] - now) / total))
+            left = max(0.0, x["end"] - now)
+            name = x["name"] if len(x["name"]) <= 26 else x["name"][:25] + "…"
+            self.text(x0 + 18, y, name, 9, True, T.OK if ok else T.TEXT)
+            self.text(x1 - 18, y, "готово" if ok else fmt_time(left), 9, True, T.OK if ok else T.MUTED, "e")
+            tr0, tr1 = x0 + 18, x1 - 18
+            _rrect(self, tr0, y + 12, tr1, y + 18, 3, fill=TRACK_C, outline="")
+            if frac > 0.01:
+                _rrect(self, tr0, y + 12, tr0 + max(6, (tr1 - tr0) * frac), y + 18, 3,
+                       fill=T.OK if ok else T.ACCENT, outline="")
+        # --- счётчик
+        self.card(x1 + 10, W)
+        f = self.flash("Таймеров")
+        self.create_rectangle(x1 + 11, 18, x1 + 14, H - 18, fill=mix(T.ACCENT, T.ACCENT_HOVER, f), outline="")
+        self.label(x1 + 28, 24, "Таймеров идёт")
+        self.text(x1 + 28, 62, str(self.shown("Таймеров")), 34, True, mix(T.ACCENT_HOVER, "#ffffff", 1 - (1 - f) ** 2))
+        self.label(x1 + 28, 100, "Готово")
+        self.text(x1 + 28, 116, str(len(done)), 11, True, T.OK if done else T.TEXT)
+        nxt = act[0]["end"] - now if act else None
+        self.label(x1 + 28 + (W - x1 - 40) / 2, 100, "Ближайший")
+        self.text(x1 + 28 + (W - x1 - 40) / 2, 116, fmt_time(nxt) if nxt is not None else "—", 11, True)
+
+
+TRACK_C = "#0b0b10"
+EDGE_C = "#2d2d38"
+
+
+# ====================================================================== админка
+class AdminHero(Hero):
+    H = 150
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d = self.d
+        by = d.get("by") or {}
+        total = max(0, d.get("n_total", 0))
+        # --- «бублик» по статусам ключей
+        rw = 190
+        self.card(0, rw)
+        cx, cy, r = rw / 2, H / 2 - 2, 46
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=11)
+        start = 90.0
+        for name, color in (("active", T.OK), ("expired", T.WARN), ("revoked", "#6b6b78")):
+            n = by.get(name, 0)
+            if total and n:
+                ext = 359.0 * n / total
+                self.create_arc(cx - r, cy - r, cx + r, cy + r, start=start, extent=-max(2, ext - 3), style="arc",
+                                outline=color, width=11)
+                start -= ext
+        self.text(cx, cy - 6, str(total), 22, True, T.TEXT, "center")
+        self.text(cx, cy + 16, "ключей", 8, True, T.MUTED, "center")
+        # --- устройства и скоро истекающие
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Устройства")
+        used, cap = d.get("dev_used", 0), max(1, d.get("dev_cap", 0))
+        tr0, tr1 = x0 + 18, x1 - 18
+        _rrect(self, tr0, 40, tr1, 48, 4, fill=TRACK_C, outline="")
+        if used:
+            _rrect(self, tr0, 40, tr0 + max(8, (tr1 - tr0) * used / cap), 48, 4, fill=T.ACCENT, outline="")
+        self.text(x1 - 18, 24, f"занято {used} из {d.get('dev_cap', 0)}", 9, True, T.TEXT, "e")
+        self.label(x0 + 18, 76, "Скоро истекают (7 дней)")
+        soon = d.get("soon") or []
+        if not soon:
+            self.text(x0 + 18, 100, "таких ключей нет", 10, False, T.MUTED)
+        for i, (nm, days) in enumerate(soon[:3]):
+            y = 98 + i * 18
+            col = T.WARN if days <= 2 else "#ffb020"
+            self.create_oval(x0 + 20, y - 3, x0 + 26, y + 3, fill=col, outline="")
+            self.text(x0 + 36, y, nm if len(nm) <= 22 else nm[:21] + "…", 9, True)
+            self.text(x1 - 18, y, "сегодня" if days == 0 else f"{days} дн.", 9, True, col, "e")
+        # --- активные
+        self.counter_card(x1 + 10, W, "Активных",
+                          [("Отозвано", str(by.get("revoked", 0))), ("Истекло", str(by.get("expired", 0)))])
+
+
+HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
+          "admin": AdminHero}

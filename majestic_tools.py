@@ -125,8 +125,13 @@ def main():
         f.place(x=0, y=0, relwidth=1, relheight=1)      # place - чтобы страница могла «въезжать»
         pages[key] = f
     dash = widgets.Dashboard(root, main_area, before=holder)
+    import stats
     toasts = appui.Toasts(root)
-    toast = toasts.push
+
+    def toast(text, kind="info", ttl=4.5):
+        """Всплывающее уведомление и запись в ленту событий на «Главной»."""
+        stats.event(text, kind)
+        toasts.push(text, kind, ttl)
     names = {p[0]: p[2] for p in PAGES}
     dash.on_toggle = lambda k, a: toast(f"{names.get(k, k)}: {'запущен' if a else 'остановлен'}",
                                         "ok" if a else "info", 3.0)
@@ -142,17 +147,22 @@ def main():
                 title_lbl.configure(text=name)
                 sub_lbl.configure(text=sub)
         sidebar.select(key)
-        for k, f in pages.items():
-            if k != key:
-                f.place_configure(x=0)
+        changed = state["page"] != key
+        # всё тяжёлое (раскладка страницы, блок бота над ней, первая окраска) - ДО анимации:
+        # иначе первый кадр анимации «залипает» на десятки миллисекунд
         pages[key].tkraise()
-        if state["page"] != key:
-            widgets.tween(root, "line", lambda t: line_acc.place(relx=0, rely=0, relwidth=t, relheight=1), 380)
-            widgets.tween(root, "title", lambda t: (title_lbl.configure(fg=widgets.mix(T.BG, T.TEXT, t)),
-                                                    sub_lbl.configure(fg=widgets.mix(T.BG, T.MUTED, t))), 260)
-            widgets.tween(root, "page", lambda t: pages[key].place_configure(x=int(28 * (1 - t))), 220)
         state["page"] = key
         dash.show(key)
+        home.active = key == "home"
+        if key == "home":
+            home.replay()
+        if changed:
+            root.update()
+            # страницу целиком не двигаем (тяжёлые перерисовывались по 60-110 мс на кадр):
+            # анимируются только лёгкие элементы - линия, заголовок и «въезд» блоков на Canvas
+            widgets.tween(root, "line", lambda t: line_acc.place(relx=0, rely=0, relwidth=t, relheight=1), 300)
+            widgets.tween(root, "title", lambda t: (title_lbl.configure(fg=widgets.mix(T.BG, T.TEXT, t)),
+                                                    sub_lbl.configure(fg=widgets.mix(T.BG, T.MUTED, t))), 220)
 
     sidebar = appui.Sidebar(side, on_select=select,
                             on_toggle=lambda k: switches.set_on(k, not switches.is_on(k)),
@@ -198,6 +208,7 @@ def main():
     def close():
         try:
             save_ui()
+            dash.flush()
         except Exception:
             pass
         try:

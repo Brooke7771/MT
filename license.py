@@ -101,7 +101,8 @@ def clear_key():
 # ---- выгрузка ключа: уведомление окна и стирание файлов ботов
 _hooks = []
 _wipe = {"pending": False}
-BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png")
+BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png",
+             "stats.json")
 BOT_DIRS = ("antiafk_templates",)
 BOT_GLOBS = ("debug_fishing_*",)
 
@@ -143,6 +144,11 @@ def wipe_bot_files():
                 os.remove(p)
             except OSError:
                 pass
+    try:
+        import stats
+        stats.reset()
+    except Exception:
+        pass
     _wipe["pending"] = False
 
 

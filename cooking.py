@@ -326,6 +326,22 @@ def build_cooking_tab(parent):
                  "skill": 9, "kitchen": 5, "faculty": True, "costs": {}, "label": "Плита 1"}.items():
         cfg.setdefault(k, v)
     timers = load_json(TIMERS_PATH, [])
+    try:
+        import widgets
+
+        def cook_stats():
+            act = [t for t in timers if not t.get("done")]
+            done = [t for t in timers if t.get("done")]
+            lab = (f"{len(act)} таймер." if act else ("Готово: " + str(len(done)) if done else "Готов"),
+                   "warn" if act else "ok")
+            return {"active": False, "label": lab,
+                    "status": "Идёт готовка" if act else "Таймеров нет",
+                    "timers": [{"name": t.get("name", ""), "label": t.get("label", ""), "start": t.get("start", 0),
+                                "end": t.get("end", 0), "done": bool(t.get("done"))} for t in timers],
+                    "items": [("Таймеров", len(act))]}
+        widgets.register("cook", cook_stats)
+    except Exception:
+        pass
     for t in timers:
         for k, v in {"img": None, "base": t.get("end", 0) - t.get("start", 0), "last_speedup": None,
                      "speedups": 0, "saved": 0.0, "remind_speedup": cfg["remind_speedup"],

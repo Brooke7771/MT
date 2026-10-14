@@ -203,6 +203,33 @@ def build_admin_tab(parent, refresh_access):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
 
     keys_cache = {}
+    try:
+        import widgets
+
+        def admin_stats():
+            ks = list(keys_cache.values())
+            by = {"active": 0, "revoked": 0, "expired": 0}
+            used = cap = 0
+            soon = []
+            now = time.time()
+            for k in ks:
+                by[k.get("status", "active")] = by.get(k.get("status", "active"), 0) + 1
+                used += len(k.get("devices", []))
+                cap += int(k.get("max_devices", 1) or 1)
+                if k.get("status") == "active" and k.get("expires"):
+                    try:
+                        left = (time.mktime(time.strptime(k["expires"][:10], "%Y-%m-%d")) - now) / 86400.0
+                        if left <= 7:
+                            soon.append((k.get("name") or k.get("key", "")[:8], max(0, int(left))))
+                    except Exception:
+                        pass
+            soon.sort(key=lambda x: x[1])
+            return {"active": False, "label": (f"Ключей: {len(ks)}", "ok"), "status": "Админка",
+                    "n_total": len(ks), "by": by, "dev_used": used, "dev_cap": cap, "soon": soon[:3],
+                    "items": [("Активных", by["active"])]}
+        widgets.register("admin", admin_stats)
+    except Exception:
+        pass
 
     def token():
         return mv.get().strip()

@@ -10,7 +10,7 @@ import tkinter.font as tkfont
 
 import theme as T
 import widgets
-from widgets import mix, _rrect, ease
+from widgets import mix, _rrect, ease, chart_range
 
 SIDE_W = 240
 CARD = "#15151c"
@@ -139,7 +139,7 @@ class Sidebar(tk.Canvas):
         try:
             if self.winfo_ismapped():
                 self._draw()
-            self.after(16 if busy else 70, self._loop)
+            self.after(8 if busy else 70, self._loop)
         except tk.TclError:
             pass
 
@@ -218,6 +218,9 @@ BANNER = "#1a1016"
 
 
 class HomePage(tk.Canvas):
+    """Главная: баннер, статистика за всё время, плитки разделов, лента событий, подсказка.
+    Без ключа закрытые боты не показываются вовсе - вместо них плитка «Ввести ключ»."""
+
     def __init__(self, parent, on_open, on_locked):
         super().__init__(parent, bg=T.BG, highlightthickness=0, bd=0)
         self.on_open, self.on_locked = on_open, on_locked
@@ -226,25 +229,40 @@ class HomePage(tk.Canvas):
         self.version = ""
         self.ram = (0.0, 0.0, 0.0)           # процент, занято ГБ, всего ГБ
         self.ram_shown = 0.0
+        self.hist = []                       # загрузка ОЗУ каждые 2 с (для графика в баннере)
         self.hov = None
         self.hv = {}
+        self.sv = {}                         # показанные (докручиваемые) числа статистики
         self.t0 = time.time()
         self.tip_i, self.tip_t = 0, time.time()
         self._ram_t = 0.0
         self._rects = []
+        self.intro = time.time()
+        self.active = False                  # страницы лежат стопкой: рисуем, только когда «Главная» сверху
+        self.scroll, self.scroll_t = 0.0, 0.0
+        self.content_h = 0
         self._fb = tkfont.Font(family="Segoe UI", size=8, weight="bold")
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", lambda e: self._hover(None))
         self.bind("<Button-1>", self._click)
+        self.bind("<MouseWheel>", self._wheel)
         self._loop()
+
+    def replay(self):
+        """Блоки заново «выезжают» по очереди (зовётся при открытии страницы)."""
+        self.intro = time.time()
+
+    def _k(self, i):
+        return ease(max(0.0, min(1.0, (time.time() - self.intro - 0.07 * i) / 0.45)))
 
     def set_state(self, access, res, version):
         self.access, self.res, self.version = set(access), res, version
 
     # ---- мышь
     def _at(self, e):
+        y = e.y + self.scroll
         for key, x0, y0, x1, y1 in self._rects:
-            if x0 <= e.x <= x1 and y0 <= e.y <= y1:
+            if x0 <= e.x <= x1 and y0 <= y <= y1:
                 return key
         return None
 
@@ -257,11 +275,15 @@ class HomePage(tk.Canvas):
         if k != self.hov:
             self._hover(k)
 
+    def _wheel(self, e):
+        room = max(0, self.content_h - self.winfo_height() + 8)
+        self.scroll_t = max(0.0, min(float(room), self.scroll_t - e.delta / 120.0 * 70))
+
     def _click(self, e):
         k = self._at(e)
         if not k:
             return
-        if k in LOCKED and k not in self.access:
+        if k == "#key" or (k in LOCKED and k not in self.access):
             self.on_locked(k)
         else:
             self.on_open(k)
@@ -272,48 +294,83 @@ class HomePage(tk.Canvas):
             import psutil
             m = psutil.virtual_memory()
             self.ram = (m.percent, (m.total - m.available) / 2 ** 30, m.total / 2 ** 30)
+            self.hist.append(m.percent)
+            del self.hist[:-60]
         except Exception:
             pass
 
     def _loop(self):
         now = time.time()
+        busy = False
         if now - self._ram_t > 2.0:
             self._ram_t = now
             self._read_ram()
         self.ram_shown = _lerp(self.ram_shown, self.ram[0], 0.12)
-        if now - self.tip_t > 8:
+        if now - self.tip_t > 9:
             self.tip_i, self.tip_t = (self.tip_i + 1) % len(TIPS), now
-        for k in [t[0] for t in TILES]:
+        keys = [t[0] for t in TILES] + ["#key"]
+        for k in keys:
             tgt = 1.0 if k == self.hov else 0.0
-            self.hv[k] = _lerp(self.hv.get(k, 0.0), tgt, 0.3)
+            v = _lerp(self.hv.get(k, 0.0), tgt, 0.3)
+            self.hv[k] = tgt if abs(v - tgt) < 0.01 else v
+            busy |= self.hv[k] != tgt
+        d = self.scroll_t - self.scroll
+        self.scroll = self.scroll_t if abs(d) < 0.5 else self.scroll + d * 0.3
+        busy |= self.scroll != self.scroll_t
+        busy |= now - self.intro < 1.2
         try:
+            if not self.active:
+                self.after(150, self._loop)
+                return
             if self.winfo_ismapped():
                 self._draw()
-            self.after(33, self._loop)
+            self.after(8 if busy else 30, self._loop)
         except tk.TclError:
             pass
 
-    # ---- рисование
+    # ---- данные плиток
     def _status_of(self, key):
         """-> (текст, цвет, метрика)"""
-        if key in LOCKED and key not in self.access:
-            return "нужен ключ", T.MUTED, ""
         fn = widgets.PROVIDERS.get(key)
+        d = None
         if fn:
             try:
                 d = fn()
             except Exception:
                 d = None
-            if d:
-                items = d.get("items") or [("", 0)]
-                unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий"}.get(key, "")
-                metric = f"{items[0][1]} {unit}"
-                st = str(d.get("status", ""))
-                if d.get("active"):
-                    return ("Пауза" if st.startswith("Пауза") else "Работает"), \
-                           ("#ffb020" if st.startswith("Пауза") else T.OK), metric
-                return "Выключен", T.MUTED, metric
+        if d:
+            lab = d.get("label")
+            if lab:
+                col = {"ok": T.OK, "warn": "#ffb020"}.get(lab[1], T.MUTED)
+                if key == "ram":
+                    return lab[0], col, f"{d.get('pct', 0):.0f}% занято"
+                if key == "cook":
+                    n = (d.get("items") or [("", 0)])[0][1]
+                    return lab[0], col, (f"{n} идёт" if n else "")
+                return lab[0], col, ""
+            items = d.get("items") or [("", 0)]
+            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий"}.get(key, "")
+            metric = f"{items[0][1]} {unit}"
+            st = str(d.get("status", ""))
+            if d.get("active"):
+                return ("Пауза" if st.startswith("Пауза") else "Работает"), \
+                       ("#ffb020" if st.startswith("Пауза") else T.OK), metric
+            return "Выключен", T.MUTED, metric
         return "Готов", T.OK, ""
+
+    # ---- рисование
+    def _apply_sections(self, secs, W):
+        """«Выезд» блоков: всё, что целиком лежит в полосе блока, получает тег и сдвигается ОДНИМ вызовом
+        (по одному элементу - сотни вызовов на кадр, было заметно медленно)."""
+        live = [(n, i, y0, y1) for n, (i, y0, y1) in enumerate(secs) if self._k(i) < 1.0]
+        for n, i, y0, y1 in live:                      # сначала метим всё, потом двигаем
+            self.addtag_enclosed(f"sec{n}", -10, y0 - 8, W + 10, y1 + 8)
+        for n, i, y0, y1 in live:
+            k = self._k(i)
+            if k < 0.02:
+                self.delete(f"sec{n}")
+            else:
+                self.move(f"sec{n}", 0, (1 - k) * 22)
 
     def _draw(self):
         self.delete("all")
@@ -322,7 +379,9 @@ class HomePage(tk.Canvas):
         if W < 300:
             return
         t = time.time() - self.t0
-        # --- баннер
+        locked_ok = self.access & LOCKED
+        sections = []                                 # (номер, верх, низ) блоков для анимации выезда
+        # ---------------- баннер
         bh = 138
         _rrect(self, 2, 2, W - 2, bh, 18, fill=BANNER, outline=mix(T.ACCENT, EDGE, 0.7))
         for i, (px, py, pr, sp) in enumerate(((0.18, 0.5, 46, 0.7), (0.5, 0.35, 30, 1.1), (0.72, 0.65, 38, 0.9))):
@@ -334,75 +393,155 @@ class HomePage(tk.Canvas):
                          fill="#ffffff", font=("Segoe UI", 20, "bold"))
         if self.res and self.res.get("ok"):
             exp = self.res.get("expires")
-            sub = "Ключ активен" + (f" до {exp[:10]}" if exp else "") + " · разделов: " + str(len(self.access & LOCKED))
+            sub = "Ключ активен" + (f" до {exp[:10]}" if exp else "") + f" · открыто ботов: {len(locked_ok)}"
         else:
             sub = "Ключ не введён · открыты очистка ОЗУ и калькулятор готовки"
         self.create_text(28, 70, text=sub, anchor="w", fill=T.MUTED, font=("Segoe UI", 10))
         self.create_text(28, 104, text=f"Majestic Tools {self.version}", anchor="w", fill=DIM, font=("Segoe UI", 9))
-        # кольцо ОЗУ
         rx, ry, rr = W - 86, bh / 2 + 1, 40
         pct = self.ram_shown
-        hot = pct >= 90
-        col = T.WARN if hot else (T.ACCENT if pct >= 75 else T.OK)
+        col = T.WARN if pct >= 90 else (T.ACCENT if pct >= 75 else T.OK)
         self.create_oval(rx - rr, ry - rr, rx + rr, ry + rr, outline="#2a1b22", width=9)
         self.create_arc(rx - rr, ry - rr, rx + rr, ry + rr, start=90, extent=-max(2, 3.6 * pct), style="arc",
                         outline=col, width=9)
         self.create_text(rx, ry - 6, text=f"{int(round(pct))}%", fill="#ffffff", font=("Segoe UI", 16, "bold"))
         self.create_text(rx, ry + 14, text="ОЗУ", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
-        self.create_text(rx - rr - 20, ry - 6, text=f"{self.ram[1]:.1f} из {self.ram[2]:.1f} ГБ", anchor="e",
+        tx = rx - rr - 20
+        self.create_text(tx, ry - 6, text=f"{self.ram[1]:.1f} из {self.ram[2]:.1f} ГБ", anchor="e",
                          fill=T.TEXT, font=("Segoe UI", 10, "bold"))
-        self.create_text(rx - rr - 20, ry + 14, text="занято памяти", anchor="e", fill=T.MUTED,
-                         font=("Segoe UI", 9))
-        # --- плитки разделов
-        self.create_text(4, bh + 28, text="РАЗДЕЛЫ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
+        self.create_text(tx, ry + 14, text="занято памяти", anchor="e", fill=T.MUTED, font=("Segoe UI", 9))
+        if W >= 900 and len(self.hist) >= 2:                 # график загрузки за последние минуты
+            gx1, gx0, gy0, gy1 = tx - 130, tx - 130 - 240, ry - 30, ry + 30
+            n = len(self.hist)
+            lo, hi = chart_range(self.hist)
+            pts = []
+            for i, v in enumerate(self.hist):
+                pts += [gx0 + (gx1 - gx0) * i / max(1, n - 1), gy1 - (gy1 - gy0) * (v - lo) / (hi - lo)]
+            if max(self.hist) - min(self.hist) >= 1.0:           # почти ровная линия - без заливки
+                self.create_polygon(pts + [gx1, gy1, gx0, gy1], fill=mix(BANNER, col, 0.2), outline="")
+            self.create_line(pts, fill=col, width=2, smooth=True)
+            self.create_oval(pts[-2] - 3, pts[-1] - 3, pts[-2] + 3, pts[-1] + 3, fill="#ffffff", outline="")
+        sections.append((0, 0, bh + 4))
+        y = bh + 18
+        # ---------------- статистика за всё время
+        try:
+            import stats
+        except Exception:
+            stats = None
+        order = [k for k in ("fish", "bot", "afk") if k in locked_ok]
+        if stats and order:
+            ys = y
+            self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
+            y += 24
+            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий"}
+            cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
+            secs = sum(stats.get(k)["secs"] for k in order)
+            cells.append(("#time", "Время работы", secs))
+            gap = 14
+            cw = (W - 4 - gap * (len(cells) - 1)) / len(cells)
+            for i, (k, lab, val) in enumerate(cells):
+                x0 = 2 + i * (cw + gap)
+                cur = self.sv.get(k, 0.0)
+                cur = val if abs(val - cur) < 0.6 else cur + (val - cur) * 0.12
+                self.sv[k] = cur
+                _rrect(self, x0, y, x0 + cw, y + 78, 14, fill=CARD, outline=EDGE)
+                self.create_rectangle(x0 + 1, y + 16, x0 + 4, y + 62, fill=T.ACCENT, outline="")
+                self.create_text(x0 + 20, y + 20, text=lab.upper(), anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
+                if k == "#time":
+                    s = int(cur)
+                    txt = f"{s // 3600} ч {s // 60 % 60} мин" if s >= 3600 else f"{s // 60} мин"
+                else:
+                    txt = f"{int(round(cur)):,}".replace(",", " ")
+                self.create_text(x0 + 20, y + 49, text=txt, anchor="w", fill="#ffffff", font=("Segoe UI", 22, "bold"))
+            y += 78
+            sections.append((1, ys, y))
+            y += 12
+        # ---------------- плитки разделов
+        ys = y
+        self.create_text(4, y + 14, text="РАЗДЕЛЫ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
+        y += 32
+        tiles = [t for t in TILES if t[0] not in LOCKED or t[0] in self.access]
+        if not locked_ok:
+            tiles = tiles + [("#key", "key", "Ввести ключ", "Откроет ботов: шитьё, рыбалка, анти-АФК")]
         cols = 3 if W >= 800 else 2
         gap, th = 14, 116
         tw = (W - 4 - gap * (cols - 1)) / cols
-        y0 = bh + 46
-        for i, (key, glyph, name, desc) in enumerate(TILES):
+        y0 = y
+        for i, (key, glyph, name, desc) in enumerate(tiles):
             r_, c_ = divmod(i, cols)
             x0 = 2 + c_ * (tw + gap)
-            y = y0 + r_ * (th + gap)
+            ty = y0 + r_ * (th + gap)
             h = self.hv.get(key, 0.0)
             lift = 4 * h
-            locked = key in LOCKED and key not in self.access
-            text, scol, metric = self._status_of(key)
-            self._rects.append((key, x0, y - lift, x0 + tw, y + th - lift))
-            ac = T.MUTED if locked else T.ACCENT
-            edge = mix(EDGE, T.ACCENT, 0.7 * h) if not locked else EDGE
-            _rrect(self, x0, y - lift, x0 + tw, y + th - lift, 16, fill=mix(CARD, "#1b1b24", h), outline=edge)
-            yy = y - lift
-            _rrect(self, x0 + 16, yy + 16, x0 + 58, yy + 58, 12, fill=mix("#21151b", "#2a1820", h) if not locked else "#1b1b22",
-                   outline="")
-            self.create_text(x0 + 37, yy + 37, text=glyph, fill=ac if not locked else DIM, font=("Segoe UI Symbol", 17))
-            self.create_text(x0 + 70, yy + 29, text=name, anchor="w", fill=T.TEXT if not locked else T.MUTED,
-                             font=("Segoe UI", 11, "bold"))
+            cta = key == "#key"
+            text, scol, metric = ("нужен ключ", T.ACCENT, "") if cta else self._status_of(key)
+            self._rects.append((key, x0, ty - lift, x0 + tw, ty + th - lift))
+            yy = ty - lift
+            _rrect(self, x0, yy, x0 + tw, yy + th, 16, fill=mix(CARD, "#1d1018" if cta else "#1b1b24", h),
+                   outline=mix(mix(EDGE, T.ACCENT, 0.5 if cta else 0.0), T.ACCENT, 0.7 * h))
+            _rrect(self, x0 + 16, yy + 16, x0 + 58, yy + 58, 12, fill=mix("#21151b", "#2a1820", h), outline="")
+            if cta:                                                  # значок ключа примитивами
+                cx, cy = x0 + 31, yy + 37
+                self.create_oval(cx - 7, cy - 7, cx + 3, cy + 3, outline=T.ACCENT, width=2)
+                self.create_line(cx + 2, cy + 2, cx + 14, cy + 14, fill=T.ACCENT, width=2)
+                self.create_line(cx + 9, cy + 9, cx + 12, cy + 6, fill=T.ACCENT, width=2)
+                self.create_line(cx + 13, cy + 13, cx + 16, cy + 10, fill=T.ACCENT, width=2)
+            else:
+                self.create_text(x0 + 37, yy + 37, text=glyph, fill=T.ACCENT, font=("Segoe UI Symbol", 17))
+            self.create_text(x0 + 70, yy + 29, text=name, anchor="w", fill=T.TEXT, font=("Segoe UI", 11, "bold"))
             self.create_text(x0 + 70, yy + 49, text=desc, anchor="w", fill=T.MUTED, font=("Segoe UI", 8))
-            # статус-плашка
             pw = self._fb.measure(text) + 26
             py = yy + th - 24
-            _rrect(self, x0 + 16, py - 11, x0 + 16 + pw, py + 11, 11, fill=mix(scol, CARD, 0.84), outline=mix(scol, CARD, 0.6))
-            if locked:
-                _rrect(self, x0 + 24, py - 1, x0 + 32, py + 5, 1, fill=scol, outline="")
-                self.create_arc(x0 + 25, py - 6, x0 + 31, py + 1, start=0, extent=180, style="arc", outline=scol)
-            else:
-                ph = (t % 1.6) / 1.6
-                if text == "Работает":
-                    rr_ = 3 + 6 * ph
-                    self.create_oval(x0 + 28 - rr_, py - rr_, x0 + 28 + rr_, py + rr_, outline=mix(scol, CARD, ph))
-                self.create_oval(x0 + 25, py - 3, x0 + 31, py + 3, fill=scol, outline="")
+            _rrect(self, x0 + 16, py - 11, x0 + 16 + pw, py + 11, 11, fill=mix(scol, CARD, 0.84),
+                   outline=mix(scol, CARD, 0.6))
+            ph = (t % 1.6) / 1.6
+            if text == "Работает":
+                rr_ = 3 + 6 * ph
+                self.create_oval(x0 + 28 - rr_, py - rr_, x0 + 28 + rr_, py + rr_, outline=mix(scol, CARD, ph))
+            self.create_oval(x0 + 25, py - 3, x0 + 31, py + 3, fill=scol, outline="")
             self.create_text(x0 + 38, py, text=text, anchor="w", fill=mix(scol, "#ffffff", 0.3), font=("Segoe UI", 8, "bold"))
             if metric:
                 self.create_text(x0 + tw - 16, py, text=metric, anchor="e", fill=T.TEXT, font=("Segoe UI", 9, "bold"))
-        rows = (len(TILES) + cols - 1) // cols
-        ty = y0 + rows * (th + gap) + 4
-        # --- подсказка
-        if ty + 70 < H + 40:
-            _rrect(self, 2, ty, W - 2, ty + 62, 14, fill=CARD, outline=EDGE)
-            self.create_text(24, ty + 31, text="✦", fill=T.ACCENT, font=("Segoe UI Symbol", 14))
-            k = ease(min(1.0, (time.time() - self.tip_t) / 0.4))
-            self.create_text(48, ty + 31 + (1 - k) * 14, text=TIPS[self.tip_i], anchor="w", fill=mix(CARD, T.TEXT, k),
-                             font=("Segoe UI", 10), width=max(200, W - 90))
+        rows = (len(tiles) + cols - 1) // cols
+        y = y0 + rows * (th + gap)
+        sections.append((2, ys, y))
+        # ---------------- лента событий
+        ys = y
+        evs = list(reversed(stats.EVENTS))[:5] if stats else []
+        eh = 52 + max(1, len(evs)) * 26
+        _rrect(self, 2, y, W - 2, y + eh, 16, fill=CARD, outline=EDGE)
+        self.create_text(20, y + 22, text="ПОСЛЕДНИЕ СОБЫТИЯ", anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
+        if not evs:
+            self.create_text(20, y + 56, text="Пока тихо: запуски ботов, смена ключа и обновления появятся здесь.",
+                             anchor="w", fill=DIM, font=("Segoe UI", 10))
+        for i, (ts, text, kind) in enumerate(evs):
+            ey = y + 52 + i * 26
+            col = {"ok": T.OK, "warn": "#ffb020", "err": T.WARN}.get(kind, "#38c6e0")
+            self.create_oval(22, ey - 3, 28, ey + 3, fill=col, outline="")
+            self.create_text(42, ey, text=time.strftime("%H:%M", time.localtime(ts)), anchor="w", fill=T.MUTED,
+                             font=("Consolas", 9))
+            self.create_text(92, ey, text=text, anchor="w", fill=T.TEXT, font=("Segoe UI", 10))
+        y += eh
+        sections.append((3, ys, y))
+        y += 14
+        # ---------------- подсказка
+        ys = y
+        _rrect(self, 2, y, W - 2, y + 62, 14, fill=CARD, outline=EDGE)
+        self.create_text(24, y + 31, text="✦", fill=T.ACCENT, font=("Segoe UI Symbol", 14))
+        k = ease(min(1.0, (time.time() - self.tip_t) / 0.4))
+        self.create_text(48, y + 31 + (1 - k) * 14, text=TIPS[self.tip_i], anchor="w", fill=mix(CARD, T.TEXT, k),
+                         font=("Segoe UI", 10), width=max(200, W - 90))
+        y += 62
+        sections.append((4, ys, y))
+        self._apply_sections(sections, W)
+        self.content_h = y + 10
+        # ---------------- прокрутка
+        if self.scroll:
+            self.move("all", 0, -self.scroll)
+        if self.content_h > H:
+            frac = H / self.content_h
+            top = (H - 8) * (self.scroll / max(1, self.content_h - H)) * (1 - frac)
+            _rrect(self, W - 6, 4 + top, W - 2, 4 + top + (H - 8) * frac, 2, fill="#2c2c36", outline="")
 
 
 # ====================================================================== уведомления
@@ -454,6 +593,6 @@ class Toasts(tk.Canvas):
             self.create_rectangle(off + 14, y + self.H - 5, off + 14 + (self.W - 28) * frac, y + self.H - 3,
                                   fill=mix(col, "#17171f", 0.55), outline="")
         try:
-            self.after(16, self._loop)
+            self.after(8, self._loop)
         except tk.TclError:
             pass

@@ -294,6 +294,23 @@ def build_ram_tab(parent):
                     variable=standby_var).grid(row=6, column=0, columnspan=4, sticky="w", **pad)
 
     busy = {"on": False, "last": 0.0}
+    hist = []                                    # загрузка ОЗУ, % каждые 2 с (для графика на странице)
+    cur = {"pct": 0.0, "used": 0, "total": 1, "cpct": 0.0}
+    last = {"freed": 0, "t": 0.0}
+    try:
+        import widgets
+
+        def ram_stats():
+            gbf = 2.0 ** 30
+            return {"active": False, "label": ("Авто: вкл" if auto_var.get() else "Вручную", "ok"),
+                    "status": "Очищаю…" if busy["on"] else ("Автоочистка включена" if auto_var.get()
+                                                          else "Только вручную"),
+                    "busy": busy["on"], "pct": cur["pct"], "used": cur["used"] / gbf, "total": cur["total"] / gbf,
+                    "cpct": cur["cpct"], "hist": list(hist), "last_t": last["t"],
+                    "items": [("Освобождено", int(last["freed"] / 2 ** 20))]}
+        widgets.register("ram", ram_stats)
+    except Exception:
+        pass
 
     def do_clean(reason):
         if busy["on"]:
@@ -304,7 +321,10 @@ def build_ram_tab(parent):
 
         def work():
             try:
+                before = memory_status()[0]
                 clean(name_patterns(names_var.get()), standby_var.get(), log)
+                time.sleep(1.0)
+                last["freed"], last["t"] = max(0, before - memory_status()[0]), time.time()
             except Exception as ex:
                 log(f"Ошибка: {ex}")
             busy["on"] = False
@@ -331,6 +351,9 @@ def build_ram_tab(parent):
         try:
             used, total, commit, limit = memory_status()
             load = 100 * used / max(1, total)
+            hist.append(load)
+            del hist[:-150]
+            cur.update(pct=load, used=used, total=total, cpct=100 * commit / max(1, limit))
             ram_var.set(f"ОЗУ: {gb(used)} из {gb(total)} ({load:.0f}%)")
             cload = 100 * commit / max(1, limit)
             commit_var.set(f"Выделено программами: {gb(commit)} из {gb(limit)} ({cload:.0f}%)")

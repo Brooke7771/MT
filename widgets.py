@@ -50,8 +50,17 @@ def tween(widget, key, fn, ms=160):
         except tk.TclError:
             return
         if t < 1.0:
-            widget.after(16, step)
+            widget.after(8, step)      # на Windows after(16) даёт ~31 мс (таймер тикает по 15,6 мс)
     step()
+
+
+def chart_range(hist):
+    """Диапазон графика по вертикали: подгоняется под данные, чтобы колебания были видны."""
+    lo, hi = max(0.0, min(hist) - 6), min(100.0, max(hist) + 6)
+    if hi - lo < 14:
+        mid = (lo + hi) / 2
+        lo, hi = max(0.0, mid - 7), min(100.0, mid + 7)
+    return lo, hi
 
 
 def fmt_time(sec):
@@ -171,6 +180,7 @@ class Dashboard:
         self.cur = None
         self.on_toggle = None           # fn(key, active): бот включился/выключился
         self.prev_active = {}
+        self.last_val = {}
         self.sess = {}                  # key -> [секунды, последний тик]
         self.last = {}
         self._tick()
@@ -192,6 +202,8 @@ class Dashboard:
             self.cur = None
         if key in PROVIDERS:
             self.cur = self._view(key)
+            if hasattr(self.cur, "replay"):
+                self.cur.replay()
             self.cur.pack(fill="x", padx=22, pady=(0, 10), before=self.before)
             self._push(key)
 
@@ -206,6 +218,11 @@ class Dashboard:
         if rate:
             val = dict(items).get(rate, 0)
             rate_val = int(val / (sec / 3600.0)) if sec >= 60 else 0
+        try:
+            import stats
+            d["life"] = stats.get(key)
+        except Exception:
+            d["life"] = {"count": 0, "secs": 0.0}
         view = self._view(key)
         if isinstance(view, StatsBar):
             if rate:
@@ -215,6 +232,30 @@ class Dashboard:
         else:
             view.set_data(d, sec, rate_val)
 
+    def _life(self, key, d, act, now):
+        """Копит статистику «за всё время»: прирост главного счётчика и время работы."""
+        try:
+            import stats
+            label = stats.MAIN.get(key)
+            if not label:
+                return
+            val = int(dict(d.get("items", [])).get(label, 0))
+            last = self.last_val.get(key)
+            self.last_val[key] = val
+            add_n = val - last if last is not None and 0 < val - last < 1000 else 0
+            add_s = 0.5 if act and self.prev_active.get(key) else 0.0
+            if add_n or add_s:
+                stats.add(key, add_n, add_s)
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            import stats
+            stats.save()
+        except Exception:
+            pass
+
     def _tick(self):
         now = time.time()
         for key, fn in list(PROVIDERS.items()):
@@ -223,6 +264,7 @@ class Dashboard:
             except Exception:
                 continue
             act = bool(d.get("active"))
+            self._life(key, d, act, now)
             if key in self.prev_active and self.prev_active[key] != act and self.on_toggle:
                 try:
                     self.on_toggle(key, act)
