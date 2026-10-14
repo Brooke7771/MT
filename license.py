@@ -9,6 +9,9 @@
 import os
 import sys
 import json
+import time
+import glob
+import shutil
 import hashlib
 import platform
 import subprocess
@@ -23,6 +26,7 @@ SERVER_URL = "https://mt-server-oyxh.onrender.com"
 # на сервере; можно несколько, по одному в строке). У остальных пользователей файла нет.
 MASTER_KEYS = []
 
+OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
 FREE = {"ram", "cook"}           # всегда доступно без ключа
 LOCKED = ["bot", "afk", "fish"]  # под ключом
 ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка",
@@ -94,6 +98,54 @@ def clear_key():
             pass
 
 
+# ---- выгрузка ключа: уведомление окна и стирание файлов ботов
+_hooks = []
+_wipe = {"pending": False}
+BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png")
+BOT_DIRS = ("antiafk_templates",)
+BOT_GLOBS = ("debug_fishing_*",)
+
+
+def on_change(fn):
+    """Окно регистрирует функцию, которую зовут после смены/выгрузки ключа."""
+    _hooks.append(fn)
+
+
+def notify():
+    for fn in list(_hooks):
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def request_wipe():
+    _wipe["pending"] = True
+
+
+def wipe_pending():
+    return _wipe["pending"]
+
+
+def wipe_bot_files():
+    """Стирает настройки, образцы и записи ботов (после выгрузки ключа)."""
+    d = app_dir()
+    for name in BOT_FILES:
+        try:
+            os.remove(os.path.join(d, name))
+        except OSError:
+            pass
+    for name in BOT_DIRS:
+        shutil.rmtree(os.path.join(d, name), ignore_errors=True)
+    for pat in BOT_GLOBS:
+        for p in glob.glob(os.path.join(d, pat)):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    _wipe["pending"] = False
+
+
 def _load_cache():
     try:
         with open(CACHE_PATH, encoding="utf-8") as f:
@@ -128,12 +180,20 @@ def check(key=None):
     try:
         res = _post("/api/check", {"key": key, "hwid": hwid()})
         res.setdefault("accesses", [])
-        _save_cache({"key": key, "res": res})
+        if res.get("ok"):
+            _save_cache({"key": key, "res": res, "ts": time.time()})
+        else:
+            try:
+                os.remove(CACHE_PATH)       # сервер отказал: старый "ок" больше не действует
+            except OSError:
+                pass
         return res
     except Exception as ex:
-        # нет связи - разрешаем по последнему удачному ответу этого же ключа
+        # нет связи - разрешаем по последнему удачному ответу этого же ключа,
+        # но не дольше OFFLINE_DAYS суток с последней успешной проверки
         cache = _load_cache()
-        if cache.get("key") == key and cache.get("res", {}).get("ok"):
+        fresh = time.time() - cache.get("ts", 0) < OFFLINE_DAYS * 86400
+        if cache.get("key") == key and cache.get("res", {}).get("ok") and fresh:
             res = dict(cache["res"])
             res["offline"] = True
             return res

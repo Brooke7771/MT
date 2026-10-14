@@ -92,11 +92,19 @@ def build_key_bar(parent, on_change):
         threading.Thread(target=work, daemon=True).start()
 
     def remove_key():
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+                "Выгрузить ключ",
+                "Ключ будет удалён с этого компьютера, закрытые разделы отключатся, а их настройки "
+                "и записи будут стёрты.\n\nПродолжить?", parent=box):
+            return
         L.clear_key()
+        L.request_wipe()
         key_var.set("")
         r = {"ok": False, "reason": "no_key"}
         state_var.set(describe(r))
         on_change()
+        L.notify()
 
     def open_dialog():
         """Ввод ключа спрятан в отдельное окно: в основном разделе виден только статус."""
@@ -137,6 +145,7 @@ def build_key_bar(parent, on_change):
             r = q.get_nowait()
             state_var.set(describe(r))
             on_change()
+            L.notify()
         except queue.Empty:
             pass
         try:

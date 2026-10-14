@@ -2,6 +2,7 @@
 """Majestic Tools: швейный бот + чистильщик ОЗУ в одном окне, с обновлением через GitHub."""
 import os
 import sys
+import json
 import queue
 import ctypes
 import threading
@@ -60,7 +61,7 @@ def main():
         access["res"] = res
         access["set"] = L.granted(res)
         if not initial:
-            root.after(0, rebuild_sidebar)
+            ui.put(("rebuild", None, None))        # в окно - только через очередь (из потока tk трогать нельзя)
         return res
 
     updater.cleanup_old()
@@ -139,6 +140,7 @@ def main():
         return out
 
     def rebuild_sidebar():
+        sync_tabs()
         has_key = bool(access["res"] and access["res"].get("ok"))
         root.title(f"Majestic Tools {__version__}" if has_key else "Очистка оперативки Majestic")
         for w in list(navbox.winfo_children()):
@@ -201,6 +203,10 @@ def main():
     stops = []
 
     def close():
+        try:
+            hud.destroy()
+        except Exception:
+            pass
         for st in stops:
             try:
                 st()
@@ -213,12 +219,54 @@ def main():
         ttk.Label(page, text=f"{what} не запустился:\n{ex}", style="Warn.TLabel",
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
-    if "bot" in access["set"]:
-        try:
+    built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка"}
+
+    def make_tab(key):
+        if key == "bot":
             import sewing_bot
-            stops.append(sewing_bot.build_bot_tab(pages["bot"], request_close=close))
-        except Exception as ex:
-            failed(pages["bot"], "Бот", ex)
+            return sewing_bot.build_bot_tab(pages["bot"], request_close=close)
+        if key == "afk":
+            import antiafk
+            return antiafk.build_antiafk_tab(pages["afk"])
+        import fishing
+        return fishing.build_fishing_tab(pages["fish"])
+
+    def teardown(key):
+        """Ключ пропал/отозван: останавливаем бота, убираем его интерфейс и статистику."""
+        st = built.pop(key, None)
+        if st is not None:
+            try:
+                st()
+            except Exception:
+                pass
+            if st in stops:
+                stops.remove(st)
+        widgets.PROVIDERS.pop(key, None)
+        for w in list(pages[key].winfo_children()):
+            w.destroy()
+        dash.views.pop(key, None)
+
+    def sync_tabs():
+        """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
+        for key in ("bot", "afk", "fish"):
+            if key in access["set"] and key not in built:
+                for w in list(pages[key].winfo_children()):
+                    w.destroy()
+                try:
+                    st = make_tab(key)
+                    built[key] = st
+                    stops.append(st)
+                except Exception as ex:
+                    failed(pages[key], NAMES[key], ex)
+            elif key not in access["set"] and key in built:
+                teardown(key)
+        if L.wipe_pending() and not built:
+            L.wipe_bot_files()
+        if state.get("page") in ("bot", "afk", "fish") and state["page"] not in access["set"]:
+            select("ram")
+
+    sync_tabs()
     try:
         import ram_cleaner
         if ram_cleaner.psutil is None:
@@ -231,18 +279,6 @@ def main():
         stops.append(cooking.build_cooking_tab(pages["cook"]))
     except Exception as ex:
         failed(pages["cook"], "Раздел готовки", ex)
-    if "afk" in access["set"]:
-        try:
-            import antiafk
-            stops.append(antiafk.build_antiafk_tab(pages["afk"]))
-        except Exception as ex:
-            failed(pages["afk"], "Анти-АФК", ex)
-    if "fish" in access["set"]:
-        try:
-            import fishing
-            stops.append(fishing.build_fishing_tab(pages["fish"]))
-        except Exception as ex:
-            failed(pages["fish"], "Рыбалка", ex)
     try:
         licenseui.build_admin_tab(pages["admin"], refresh_access)
     except Exception as ex:
@@ -256,6 +292,40 @@ def main():
                    activebackground=T.SIDEBAR, activeforeground=T.TEXT, selectcolor=T.FIELD,
                    bd=0, highlightthickness=0, font=("Segoe UI", 9),
                    command=lambda: root.attributes("-topmost", top_var.get())).pack(anchor="w")
+    import hud as _hud
+    ui_path = os.path.join(app_dir(), "ui_config.json")
+    try:
+        with open(ui_path, encoding="utf-8") as f:
+            ui_cfg = json.load(f)
+    except Exception:
+        ui_cfg = {}
+    hud = _hud.Hud(root, dash)
+    hud.set_side(ui_cfg.get("hud_side", "right"))
+    hud.set_enabled(bool(ui_cfg.get("hud", False)))
+    hud_var = tk.BooleanVar(value=hud.enabled)
+
+    def save_ui():
+        ui_cfg.update(hud=hud_var.get(), hud_side=hud.side)
+        try:
+            with open(ui_path, "w", encoding="utf-8") as f:
+                json.dump(ui_cfg, f)
+        except Exception:
+            pass
+
+    tk.Checkbutton(foot, text="HUD поверх игры", variable=hud_var, bg=T.SIDEBAR, fg=T.MUTED,
+                   activebackground=T.SIDEBAR, activeforeground=T.TEXT, selectcolor=T.FIELD,
+                   bd=0, highlightthickness=0, font=("Segoe UI", 9),
+                   command=lambda: (hud.set_enabled(hud_var.get()), save_ui())).pack(anchor="w")
+    side_var = tk.StringVar()
+
+    def paint_side():
+        side_var.set("   положение: " + ("справа" if hud.side == "right" else "слева"))
+    paint_side()
+    side_lbl = tk.Label(foot, textvariable=side_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 8),
+                        cursor="hand2")
+    side_lbl.pack(anchor="w")
+    side_lbl.bind("<Button-1>", lambda e: (hud.set_side("left" if hud.side == "right" else "right"),
+                                           paint_side(), save_ui()))
     upd_var = tk.StringVar(value=f"Версия {__version__}")
     tk.Label(foot, textvariable=upd_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 9),
              wraplength=200, justify="left").pack(anchor="w", pady=(8, 6))
@@ -316,7 +386,9 @@ def main():
         try:
             while True:
                 kind, fn, val = ui.get_nowait()
-                if kind == "progress":
+                if kind == "rebuild":
+                    rebuild_sidebar()
+                elif kind == "progress":
                     upd_var.set(f"Скачиваю {val * 100:.0f}%")
                 elif kind == "err":
                     state["busy"] = False
@@ -348,6 +420,7 @@ def main():
         root.after(300000, recheck_loop)      # перепроверка ключа раз в 5 минут
     root.after(300000, recheck_loop)
     T.dark_titlebar(root)
+    L.on_change(lambda: threading.Thread(target=lambda: refresh_access(), daemon=True).start())
     root.after(100, pump)
     root.after(1500, lambda: start_check(False))      # тихая проверка при запуске
     root.mainloop()
