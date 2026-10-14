@@ -67,30 +67,48 @@ def main():
     updater.cleanup_old()
     root = tk.Tk()
     root.title("Очистка оперативки Majestic")
-    root.minsize(900, 560)
+    root.minsize(1000, 640)
     T.apply(root)
     root.attributes("-topmost", True)
 
+    # настройки окна: размер и положение запоминаются между запусками
+    import re
+    ui_path = os.path.join(app_dir(), "ui_config.json")
+    try:
+        with open(ui_path, encoding="utf-8") as f:
+            ui_cfg = json.load(f)
+    except Exception:
+        ui_cfg = {}
+    scr_w, scr_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    gw, gh = min(1260, scr_w - 80), min(820, scr_h - 100)
+    gx, gy = (scr_w - gw) // 2, (scr_h - gh) // 2
+    m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", str(ui_cfg.get("geometry", "")))
+    if m:
+        w_, h_, x_, y_ = map(int, m.groups())
+        if w_ >= 1000 and h_ >= 640:
+            gw, gh = min(w_, scr_w), min(h_, scr_h)
+            gx, gy = max(0, min(x_, scr_w - 200)), max(0, min(y_, scr_h - 120))
+    root.geometry(f"{gw}x{gh}+{gx}+{gy}")
+
+    import widgets
+    import appui
+
     # ---------------- каркас: меню слева, страница справа
-    side = tk.Frame(root, bg=T.SIDEBAR, width=232)
+    side = tk.Frame(root, bg=T.SIDEBAR, width=appui.SIDE_W)
     side.pack(side="left", fill="y")
     side.pack_propagate(False)
     tk.Frame(root, bg=T.BORDER, width=1).pack(side="left", fill="y")
     main_area = ttk.Frame(root)
     main_area.pack(side="left", fill="both", expand=True)
+    foot = tk.Frame(side, bg=T.SIDEBAR)          # низ меню (заполняется ниже), пакуем до самого меню
+    foot.pack(side="bottom", fill="x", padx=14, pady=(0, 12))
 
-    brand = tk.Frame(side, bg=T.SIDEBAR)
-    brand.pack(fill="x", padx=18, pady=(20, 22))
-    tk.Label(brand, text="MAJESTIC", bg=T.SIDEBAR, fg=T.ACCENT,
-             font=("Segoe UI", 17, "bold")).pack(anchor="w")
-    tk.Label(brand, text="TOOLS", bg=T.SIDEBAR, fg=T.TEXT,
-             font=("Segoe UI", 11, "bold")).pack(anchor="w")
-
-    header = ttk.Frame(main_area)
-    header.pack(fill="x", padx=22, pady=(16, 0))
-    title_var, sub_var = tk.StringVar(), tk.StringVar()
-    ttk.Label(header, textvariable=title_var, font=T.FONT_TITLE).pack(anchor="w")
-    ttk.Label(header, textvariable=sub_var, style="Muted.TLabel").pack(anchor="w")
+    header = tk.Frame(main_area, bg=T.BG)
+    header.pack(fill="x", padx=22, pady=(18, 0))
+    title_lbl = tk.Label(header, text="", bg=T.BG, fg=T.TEXT, font=T.FONT_TITLE, anchor="w")
+    title_lbl.pack(anchor="w")
+    sub_lbl = tk.Label(header, text="", bg=T.BG, fg=T.MUTED, font=T.FONT, anchor="w")
+    sub_lbl.pack(anchor="w")
     line_box = tk.Frame(main_area, bg=T.BORDER, height=2)
     line_box.pack(fill="x", padx=22, pady=(10, 10))
     line_acc = tk.Frame(line_box, bg=T.ACCENT)
@@ -98,111 +116,90 @@ def main():
 
     holder = ttk.Frame(main_area)
     holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
-    holder.rowconfigure(0, weight=1)
-    holder.columnconfigure(0, weight=1)
-    pages, nav = {}, {}
-    PAGES_ALL = PAGES + [("admin", "🔑", "Админка", "Создание и управление ключами")]
+    pages = {}
+    HOME = ("home", "⌂", "Главная", "Обзор: состояние ключа, память и быстрые переходы")
+    ADMIN = ("admin", "🔑", "Админка", "Создание и управление ключами")
+    PAGES_ALL = [HOME] + PAGES + [ADMIN]
     for key, *_ in PAGES_ALL:
         f = ttk.Frame(holder)
-        f.grid(row=0, column=0, sticky="nsew")
+        f.place(x=0, y=0, relwidth=1, relheight=1)      # place - чтобы страница могла «въезжать»
         pages[key] = f
-    import widgets
     dash = widgets.Dashboard(root, main_area, before=holder)
+    toasts = appui.Toasts(root)
+    toast = toasts.push
+    names = {p[0]: p[2] for p in PAGES}
+    dash.on_toggle = lambda k, a: toast(f"{names.get(k, k)}: {'запущен' if a else 'остановлен'}",
+                                        "ok" if a else "info", 3.0)
     refresh_access(initial=True)
 
+    state = {"page": None, "busy": False, "had_key": None}
+
     def select(key):
-        for k, (bar, lbl, row) in nav.items():
-            on = k == key
-            bg = "#1a0c10" if on else T.SIDEBAR
-            for w in (row, lbl):
-                w.configure(bg=bg)
-            bar.configure(bg=T.ACCENT if on else T.SIDEBAR)
-            lbl.configure(fg="#ffffff" if on else T.MUTED)
+        if key not in pages:
+            return
         for k, icon, name, sub in PAGES_ALL:
             if k == key:
-                title_var.set(name if access["res"] and access["res"].get("ok") or k in ("ram", "cook", "admin") else name)
-                sub_var.set(sub)
+                title_lbl.configure(text=name)
+                sub_lbl.configure(text=sub)
+        sidebar.select(key)
+        for k, f in pages.items():
+            if k != key:
+                f.place_configure(x=0)
         pages[key].tkraise()
         if state["page"] != key:
             widgets.tween(root, "line", lambda t: line_acc.place(relx=0, rely=0, relwidth=t, relheight=1), 380)
+            widgets.tween(root, "title", lambda t: (title_lbl.configure(fg=widgets.mix(T.BG, T.TEXT, t)),
+                                                    sub_lbl.configure(fg=widgets.mix(T.BG, T.MUTED, t))), 260)
+            widgets.tween(root, "page", lambda t: pages[key].place_configure(x=int(28 * (1 - t))), 220)
         state["page"] = key
         dash.show(key)
 
-    state = {"page": None, "busy": False}
-
-    nav_rows = {}
+    sidebar = appui.Sidebar(side, on_select=select,
+                            on_toggle=lambda k: switches.set_on(k, not switches.is_on(k)),
+                            get_toggle=switches.is_on, switchable=list(switches.NAMES))
+    sidebar.pack(fill="both", expand=True)
+    home = appui.HomePage(pages["home"], on_open=select,
+                          on_locked=lambda k: (toast("Для этого раздела нужен ключ: введи его в «Чистильщик ОЗУ»", "warn", 5.0),
+                                               select("ram")))
+    home.pack(fill="both", expand=True)
 
     def visible_pages():
         acc = access["set"]
-        out = [p for p in PAGES if p[0] in acc]
+        out = [HOME] + [p for p in PAGES if p[0] in acc]
         if L.has_master():
-            out.append(("admin", "🔑", "Админка", "Создание и управление ключами"))
+            out.append(ADMIN)
         return out
 
     def rebuild_sidebar():
         sync_tabs()
-        has_key = bool(access["res"] and access["res"].get("ok"))
+        res = access["res"]
+        has_key = bool(res and res.get("ok"))
         root.title(f"Majestic Tools {__version__}" if has_key else "Очистка оперативки Majestic")
-        for w in list(navbox.winfo_children()):
-            w.destroy()
-        nav.clear(); pills.clear(); nav_rows.clear()
-        for key, icon, name, _ in visible_pages():
-            build_nav_row(key, icon, name)
+        vp = visible_pages()
+        sidebar.set_items([(k, i, n) for k, i, n, _ in vp])
+        if has_key:
+            exp = res.get("expires")
+            sidebar.set_status(f"Ключ «{res.get('name') or 'ключ'}»"[:24],
+                               f"до {exp[:10]}" if exp else "доступ активен", True)
+        else:
+            sidebar.set_status("Нет ключа", "ОЗУ и готовка бесплатны", False)
+        home.set_state(access["set"], res, __version__)
+        if state["had_key"] is not None and has_key != state["had_key"]:
+            if has_key:
+                toast("Ключ активен: закрытые разделы открыты", "ok")
+            else:
+                toast("Доступ закрыт: закрытые разделы отключены", "warn", 5.0)
+        state["had_key"] = has_key
         cur = state.get("page")
-        select(cur if cur in nav else (visible_pages()[0][0] if visible_pages() else "ram"))
-
-    pills = {}
-
-    def paint_pill(key):
-        on = switches.is_on(key)
-        pills[key].configure(text="ВКЛ" if on else "ВЫКЛ", fg="#3ecf6e" if on else T.MUTED,
-                             bg="#12291a" if on else "#1d1d23")
-
-    switches.listen(lambda k, v: root.after(0, lambda: k in pills and paint_pill(k)))
-
-    navbox = tk.Frame(side, bg=T.SIDEBAR)
-    navbox.pack(fill="x")
-
-    def hover(k, on):
-        """Плавная подсветка пункта меню под курсором (активный пункт не трогаем)."""
-        if k not in nav or state["page"] == k:
-            return
-        bar, lbl, row = nav[k]
-        a, b = (T.SIDEBAR, "#17171d") if on else ("#17171d", T.SIDEBAR)
-        fa, fb = (T.MUTED, T.TEXT) if on else (T.TEXT, T.MUTED)
-
-        def fn(t):
-            if state["page"] == k:
-                return
-            for w in (row, lbl):
-                w.configure(bg=widgets.mix(a, b, t))
-            lbl.configure(fg=widgets.mix(fa, fb, t))
-        widgets.tween(root, "nav" + k, fn, 140)
-
-    def build_nav_row(key, icon, name):
-        row = tk.Frame(navbox, bg=T.SIDEBAR, cursor="hand2")
-        row.pack(fill="x", pady=1)
-        bar = tk.Frame(row, bg=T.SIDEBAR, width=4)
-        bar.pack(side="left", fill="y")
-        lbl = tk.Label(row, text=f"  {icon}   {name}", bg=T.SIDEBAR, fg=T.MUTED, anchor="w",
-                       font=("Segoe UI", 11), padx=10, pady=10, cursor="hand2")
-        lbl.pack(side="left", fill="x", expand=True)
-        if key in switches.NAMES:
-            pill = tk.Label(row, font=("Segoe UI", 8, "bold"), padx=7, pady=2, cursor="hand2")
-            pill.pack(side="right", padx=(0, 10))
-            pills[key] = pill
-            pill.bind("<Button-1>", lambda e, k=key: switches.set_on(k, not switches.is_on(k)))
-            paint_pill(key)
-        nav[key] = (bar, lbl, row)
-        nav_rows[key] = row
-        for w in (row, lbl):
-            w.bind("<Button-1>", lambda e, k=key: select(k))
-            w.bind("<Enter>", lambda e, k=key: hover(k, True))
-            w.bind("<Leave>", lambda e, k=key: hover(k, False))
+        select(cur if cur in [k for k, *_ in vp] else "home")
 
     stops = []
 
     def close():
+        try:
+            save_ui()
+        except Exception:
+            pass
         try:
             hud.destroy()
         except Exception:
@@ -264,7 +261,7 @@ def main():
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
         if state.get("page") in ("bot", "afk", "fish") and state["page"] not in access["set"]:
-            select("ram")
+            select("home")
 
     sync_tabs()
     try:
@@ -285,41 +282,29 @@ def main():
         failed(pages["admin"], "Админка", ex)
 
     # ---------------- низ меню: поверх окон, версия, обновления
-    foot = tk.Frame(side, bg=T.SIDEBAR)
-    foot.pack(side="bottom", fill="x", padx=14, pady=14)
     top_var = tk.BooleanVar(value=True)
-    tk.Checkbutton(foot, text="Поверх окон", variable=top_var, bg=T.SIDEBAR, fg=T.MUTED,
-                   activebackground=T.SIDEBAR, activeforeground=T.TEXT, selectcolor=T.FIELD,
-                   bd=0, highlightthickness=0, font=("Segoe UI", 9),
-                   command=lambda: root.attributes("-topmost", top_var.get())).pack(anchor="w")
+    ttk.Checkbutton(foot, text="Поверх окон", variable=top_var, style="Side.TCheckbutton",
+                    command=lambda: root.attributes("-topmost", top_var.get())).pack(anchor="w", pady=1)
     import hud as _hud
-    ui_path = os.path.join(app_dir(), "ui_config.json")
-    try:
-        with open(ui_path, encoding="utf-8") as f:
-            ui_cfg = json.load(f)
-    except Exception:
-        ui_cfg = {}
     hud = _hud.Hud(root, dash)
     hud.set_side(ui_cfg.get("hud_side", "right"))
     hud.set_enabled(bool(ui_cfg.get("hud", False)))
     hud_var = tk.BooleanVar(value=hud.enabled)
 
     def save_ui():
-        ui_cfg.update(hud=hud_var.get(), hud_side=hud.side)
+        ui_cfg.update(hud=hud_var.get(), hud_side=hud.side, geometry=root.geometry())
         try:
             with open(ui_path, "w", encoding="utf-8") as f:
                 json.dump(ui_cfg, f)
         except Exception:
             pass
 
-    tk.Checkbutton(foot, text="HUD поверх игры", variable=hud_var, bg=T.SIDEBAR, fg=T.MUTED,
-                   activebackground=T.SIDEBAR, activeforeground=T.TEXT, selectcolor=T.FIELD,
-                   bd=0, highlightthickness=0, font=("Segoe UI", 9),
-                   command=lambda: (hud.set_enabled(hud_var.get()), save_ui())).pack(anchor="w")
+    ttk.Checkbutton(foot, text="HUD поверх игры", variable=hud_var, style="Side.TCheckbutton",
+                    command=lambda: (hud.set_enabled(hud_var.get()), save_ui())).pack(anchor="w", pady=1)
     side_var = tk.StringVar()
 
     def paint_side():
-        side_var.set("   положение: " + ("справа" if hud.side == "right" else "слева"))
+        side_var.set("      положение HUD: " + ("справа" if hud.side == "right" else "слева"))
     paint_side()
     side_lbl = tk.Label(foot, textvariable=side_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 8),
                         cursor="hand2")
@@ -358,7 +343,10 @@ def main():
         if info is None:
             upd_var.set(f"Версия {__version__} — последняя")
             state["busy"] = False
+            if state.get("manual"):
+                toast("У тебя последняя версия", "ok")
             return
+        toast(f"Доступна версия {info['version']}", "info", 6.0)
         notes = info["notes"][:500]
         text = f"Доступна версия {info['version']} (у тебя {__version__})."
         if notes:

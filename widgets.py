@@ -169,6 +169,8 @@ class Dashboard:
         self.parent, self.before = parent, before
         self.views = {}                 # key -> свой блок страницы (у каждого бота он особый)
         self.cur = None
+        self.on_toggle = None           # fn(key, active): бот включился/выключился
+        self.prev_active = {}
         self.sess = {}                  # key -> [секунды, последний тик]
         self.last = {}
         self._tick()
@@ -220,6 +222,13 @@ class Dashboard:
                 d = fn()
             except Exception:
                 continue
+            act = bool(d.get("active"))
+            if key in self.prev_active and self.prev_active[key] != act and self.on_toggle:
+                try:
+                    self.on_toggle(key, act)
+                except Exception:
+                    pass
+            self.prev_active[key] = act
             s = self.sess.setdefault(key, [0.0, None])
             if d.get("active") and s[1] is not None:
                 s[0] += now - s[1]

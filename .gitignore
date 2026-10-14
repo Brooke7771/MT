@@ -10,3 +10,4 @@ dist/
 cache/
 antiafk_templates/
 admin_key.txt
+ui_config.json

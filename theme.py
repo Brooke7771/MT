@@ -132,6 +132,9 @@ def apply(root):
            indicatorbackground=[("selected", ACCENT), ("active", BORDER)],
            foreground=[("active", "#ffffff")])
 
+    st.configure("Side.TCheckbutton", background=SIDEBAR, foreground=MUTED, font=("Segoe UI", 9), padding=2)
+    st.map("Side.TCheckbutton", background=[("active", SIDEBAR)], foreground=[("active", TEXT)])
+
     for w in ("TEntry", "TSpinbox", "TCombobox"):
         st.configure(w, fieldbackground=FIELD, foreground=TEXT, background=PANEL, bordercolor=BORDER,
                      lightcolor=FIELD, darkcolor=FIELD, arrowcolor=TEXT, insertcolor=TEXT, padding=4)
