@@ -90,6 +90,24 @@ def minigame_on(img):
     a, _, _ = crop(img, BAR_BAND)
     return (a.min(axis=2) > 200).sum() > 40 * (img.shape[1] / BASE_W) ** 2 and not hints_on(img)
 
+PROG_FILL = (688, 894, 1226, 902)   # заливка полоски прогресса (жёлтая -> зелёная)
+
+
+def progress_px(img):
+    """Сколько пикселей (в масштабе 1080p) занимает заливка полоски вываживания слева.
+    Это сама игра говорит, растёт прогресс или падает. None - заливки нет (пустая полоска)."""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = sc(PROG_FILL, W, H)
+    a = img[y0:y1, x0:x1].astype(np.int16)
+    fill = (a[:, :, 1] > 150) & (a[:, :, 0] < 110)           # BGR: зелёного много, синего нет
+    cols = fill.sum(axis=0) >= max(2, int(fill.shape[0] * 0.6))
+    if cols.size == 0 or not cols[0]:
+        return None
+    bad = np.nonzero(~cols)[0]
+    n = int(bad[0]) if len(bad) else cols.size
+    return n * BASE_W / W
+
+
 def cast_bar(img):
     """-> (зона_слева, зона_справа, x_метки) в пикселях экрана или None"""
     a, x0, _ = crop(img, CAST_BAND)
@@ -148,7 +166,7 @@ def _glyph_all(img, min_w=4):
         n, lab, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
         for k in range(1, n):
             x, y, w, h, a = st[k]
-            if not (min_w <= w <= 60 and 2 <= h <= 40 and 1.2 <= w / max(1, h) <= 4.8
+            if not (min_w <= w <= 48 and 2 <= h <= 40 and 1.2 <= w / max(1, h) <= 4.8
                     and 0.25 < a / (w * h) < 0.92):
                 continue
             p = max(3, int(w * 0.45))
@@ -203,15 +221,19 @@ def speck_cloud(img):
     return loc[0] * 4.0, loc[1] * 4.0, float(mxv)
 
 
-def find_marker(img, near=None, cloud=None):
+def find_marker(img, near=None, cloud=None, cx=None):
     """Плашка с рыбкой. near=(x, y, r) - искать рядом с прошлым местом;
-    cloud=(x, y) - облако брызг (плашка всегда рядом с ним). -> (cx, cy, size) или None"""
+    cloud=(x, y) - облако брызг (плашка всегда рядом с ним);
+    cx=(x, сигма) - камера обычно держит рыбу по центру экрана: мягкий бонус центру.
+    -> (cx, cy, size) или None"""
     cands = _glyph_all(img) + _green_all(img)
     if not cands:
         return None
     best, bscore = None, -1e9
     for c in cands:
         sc_ = c["score"]
+        if cx is not None:
+            sc_ *= 0.4 + 0.6 * float(np.exp(-((c["x"] - cx[0]) / cx[1]) ** 2))
         if near is not None:
             # рядом с прошлым местом - бонус, но не запрет: сильная плашка в стороне всё равно победит
             d = np.hypot(c["x"] - near[0], c["y"] - near[1])
@@ -285,7 +307,9 @@ def splash_x(img, cx, cy, size):
     return x0 + float(np.argmax(sm))
 
 
-BG_AREA = (260, 60, 1660, 560)     # область фона (для 1920x1080)
+# область фона (для 1920x1080): БЕЗ чата слева (x<520), панелей справа (x>1590) - они неподвижны
+# на экране и глушили сдвиг фазовой корреляции (на записи 143614: 2,5 против 49 px/с)
+BG_AREA = (520, 60, 1590, 560)
 BG_CUT = 300                       # вырезаем центр +-300 px: там плашка, брызги и персонаж
 
 
@@ -349,7 +373,7 @@ class PlateTracker:
         near = None
         if self.pos is not None:
             near = (self.pos[0] - x0, self.pos[1] - y0, max(80 * k, self.pos[2] * 4))
-        m = find_marker(screen[y0:y1, x0:x1], near=near)
+        m = find_marker(screen[y0:y1, x0:x1], near=near, cx=(screen.shape[1] / 2 - x0, 300 * k))
         if m is not None:
             nx, ny, size = x0 + m[0], y0 + m[1], m[2]
             jump = self.pos is not None and np.hypot(nx - self.pos[0], ny - self.pos[1]) > max(80 * k, self.pos[2] * 4)
@@ -381,6 +405,7 @@ class Tracker:
     сторона меняется, только если новая держится 0.2 с. Во время вываживания направление
     не сбрасывается: если данных нет - держим последнее (отпущенная клавиша = откат)."""
 
+    USE_PLATE = False      # True - добавлять скорость иконки (старый режим "иконка - фон")
     TAU = 0.3              # с: сглаживание скорости
     VTH = 3.0              # px/с на 1080p: порог уверенной скорости
     CONFIRM = 0.2          # с: сколько новая сторона должна держаться для смены
@@ -427,7 +452,9 @@ class Tracker:
         if zone is None:
             zone = sc(ZONE, W, H)
         gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-        plate = self.plate.update(screen, gray, zone, now, k)
+        # иконку не ведём: решение только по движению фона (на записи с эталоном по прогрессу
+        # 95% окон совпало, +8,6 px/с против -10 px/с); ведение иконки цеплялось за берег/деревья
+        plate = self.plate.update(screen, gray, zone, now, k) if self.USE_PLATE else None
         small, scale = self._prep(gray, plate, W)
         dt = None if self.prev_t is None else now - self.prev_t
         step_v = None
@@ -479,6 +506,10 @@ class Fisher:
         self.e_tries = 0
         self.ui_seen = 0.0
         self.in_fight = False
+        self.prog = []                 # (время, прогресс px) последних ~2 с вываживания
+        self.key_t = 0.0               # когда последний раз сменили клавишу
+        self.fb_until = 0.0            # до какого момента клавиша навязана обратной связью
+        self.fb_key = None
         self.tracker = Tracker()
         self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0}
         self.state = "Жду"
@@ -488,6 +519,7 @@ class Fisher:
     def hold(self, key):
         if self.held == key:
             return
+        self.key_t = self.clock()
         if self.held:
             self.inp.key(self.held, False)
         if key:
@@ -562,6 +594,30 @@ class Fisher:
                 except Exception:
                     pass
 
+    FALL_PX = 5.0          # px (1080p): падение прогресса за окно, после которого считаем клавишу неверной
+    FALL_WIN = 0.7         # с: окно оценки (и минимум с момента смены клавиши)
+    FB_LOCK = 1.5          # с: сколько держим навязанную клавишу, не слушая трекер
+
+    def _feedback(self, want, now, k):
+        """Сама полоска прогресса - главный судья: если при текущей клавише она падает
+        (трекер у берега ошибается из-за шума фона), меняем клавишу вопреки трекеру и
+        на время FB_LOCK не даём трекеру вернуть её обратно."""
+        if now < self.fb_until and self.fb_key:
+            return self.fb_key
+        held = self.held
+        if held and now - self.key_t >= self.FALL_WIN and self.prog:
+            t_ago = now - self.FALL_WIN
+            old = [v for t, v in self.prog if t <= t_ago and t >= self.key_t]
+            cur = self.prog[-1][1]
+            if old and cur > 12 and old[-1] - cur >= self.FALL_PX:
+                new = "D" if held == "A" else "A"
+                self.fb_key, self.fb_until = new, now + self.FB_LOCK
+                self.tracker.last_dir = -self.tracker.last_dir if self.tracker.last_dir else 0
+                self.tracker.pending = 0
+                self.log(f"Прогресс падает ({old[-1]:.0f} -> {cur:.0f}) - меняю клавишу на {new}")
+                return new
+        return want
+
     def _step(self, shot, H, W, now):
         cfg = self.cfg
 
@@ -587,13 +643,19 @@ class Fisher:
             if not self.in_fight:
                 self.in_fight = True
                 self.tracker.reset()
+                self.prog = []
+                self.fb_until = 0.0
                 self.log("Рыба на крючке, тяну")
             d = self.tracker.update(shot, cfg["zone"] or sc(ZONE, W, H), now)
+            p = progress_px(shot)
+            if p is not None:
+                self.prog = [(t, v) for t, v in self.prog if now - t < 2.0] + [(now, p)]
             if d is not None:
                 self.last_seen = now
                 want = "D" if d < 0 else "A"
                 if cfg["invert"]:
                     want = "A" if want == "D" else "D"
+                want = self._feedback(want, now, W / BASE_W)
                 self.hold(want)
             elif now - self.last_seen > cfg["hold_after_lost"]:
                 self.hold(None)
