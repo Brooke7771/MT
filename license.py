@@ -18,11 +18,10 @@ import urllib.request
 
 # ВПИШИ сюда адрес своего сервера Render (без слэша на конце):
 SERVER_URL = "https://mt-server-oyxh.onrender.com"
-# Мастер-ключи для админки (та же строка, что ADMIN_SECRET на сервере).
-# Можно несколько — запасные. Добавляются патчем программы.
-MASTER_KEYS = [
-    "ВПИШИ_СВОЙ_МАСТЕР_КЛЮЧ",
-]
+# Мастер-ключ в коде НЕ хранится (репозиторий публичный). Админка включается, только если
+# рядом с программой лежит файл admin_key.txt с мастер-ключом (та же строка, что ADMIN_SECRET
+# на сервере; можно несколько, по одному в строке). У остальных пользователей файла нет.
+MASTER_KEYS = []
 
 FREE = {"ram", "cook"}           # всегда доступно без ключа
 LOCKED = ["bot", "afk", "fish"]  # под ключом
@@ -150,7 +149,13 @@ def granted(res):
 
 # ================================================================ админка
 def valid_masters():
-    return [m for m in MASTER_KEYS if m and "ВПИШИ" not in m]
+    keys = [m for m in MASTER_KEYS if m and "ВПИШИ" not in m]
+    try:
+        with open(os.path.join(app_dir(), "admin_key.txt"), encoding="utf-8-sig") as f:
+            keys += [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        pass
+    return keys
 
 
 def has_master():
