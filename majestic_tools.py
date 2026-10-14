@@ -40,6 +40,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("bot", "✂", "Швейный бот", "Автопрохождение мини-игры в ателье"),
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память, которую держит игра"),
     ("cook", "♨", "Готовка", "Калькулятор блюд, таймеры и уведомления в Telegram"),
+    ("market", "⚖", "Рынок", "Цены Маркетплейса по серверам и где выгодно купить и продать (официальное API Majestic)"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
@@ -287,6 +288,11 @@ def main():
         stops.append(cooking.build_cooking_tab(pages["cook"]))
     except Exception as ex:
         failed(pages["cook"], "Раздел готовки", ex)
+    try:
+        import market
+        stops.append(market.build_market_tab(pages["market"]))
+    except Exception as ex:
+        failed(pages["market"], "Рынок", ex)
     try:
         licenseui.build_admin_tab(pages["admin"], refresh_access)
     except Exception as ex:

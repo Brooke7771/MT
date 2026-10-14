@@ -527,5 +527,59 @@ class AdminHero(Hero):
                           [("Отозвано", str(by.get("revoked", 0))), ("Истекло", str(by.get("expired", 0)))])
 
 
+# ====================================================================== рынок
+class MarketHero(Hero):
+    H = 150
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        s = (self.d.get("market") or {})
+        t = self.t()
+        left, reset = s.get("left", 5), s.get("reset", 0.0)
+        # --- кольцо лимита запросов API
+        rw = 190
+        self.card(0, rw)
+        cx, cy, r = rw / 2, H / 2 - 2, 46
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=9)
+        col = T.OK if left >= 3 else ("#ffb020" if left >= 1 else T.WARN)
+        if left > 0:
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.9 * left / 5.0, style="arc",
+                            outline=col, width=9)
+        self.text(cx, cy - 6, f"{left}/5", 20, True, T.TEXT, "center")
+        self.text(cx, cy + 16, "запросов API", 8, False, T.MUTED, "center")
+        if reset > 0 and left < 5:
+            self.text(cx, H - 14, f"восстановится через {int(reset)} с", 8, False, T.MUTED, "center")
+        # --- топ по продажам
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        head = "Топ по продажам"
+        if s.get("server"):
+            head += f" · {s['server']} · {s.get('cat', '')}"
+        self.label(x0 + 18, 24, head)
+        top = s.get("top") or []
+        if not s.get("has_key"):
+            self.text((x0 + x1) / 2, H / 2 + 6, "Введи ключ API (кнопка «Получить ключ» ниже)", 10, False, T.MUTED, "center")
+        elif s.get("error"):
+            self.text((x0 + x1) / 2, H / 2 + 6, s["error"][:70], 10, False, T.WARN, "center", width=x1 - x0 - 40)
+        elif s.get("busy"):
+            self.text((x0 + x1) / 2, H / 2 + 6, str(s["busy"]) + "." * (int(t * 2) % 4), 11, True, T.TEXT, "center")
+        elif not top:
+            self.text((x0 + x1) / 2, H / 2 + 6, "Нажми «Обновить»", 10, False, T.MUTED, "center")
+        mx = max([v for _, v in top] + [1])
+        for i, (nm, v) in enumerate(top):
+            y = 52 + i * 30
+            self.text(x0 + 18, y, nm if len(nm) <= 28 else nm[:27] + "…", 9, True)
+            self.text(x1 - 18, y, f"{v:,}".replace(",", " "), 9, True, T.MUTED, "e")
+            _rrect(self, x0 + 18, y + 11, x1 - 18, y + 16, 2, fill="#0b0b10", outline="")
+            _rrect(self, x0 + 18, y + 11, x0 + 18 + max(6, (x1 - x0 - 36) * v / mx), y + 16, 2, fill=T.ACCENT, outline="")
+        # --- счётчик
+        self.counter_card(x1 + 10, W, "Позиций", [("Обновлено", (s.get("updated") or "—") + (" UTC" if s.get("updated") else "")),
+                                                  ("Период", f"{s.get('period')} дн." if s.get("period") else "—")])
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero}
+          "admin": AdminHero, "market": MarketHero}
