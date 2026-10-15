@@ -184,7 +184,7 @@ def build_admin_tab(parent, refresh_access):
     body.rowconfigure(0, weight=1)
 
     cols = ("name", "key", "acc", "status", "dev", "exp")
-    tv = ttk.Treeview(body, columns=cols, show="headings", height=12, selectmode="browse")
+    tv = ttk.Treeview(body, columns=cols, show="headings", height=12, selectmode="extended")
     for c, h, w in (("name", "Название", 150), ("key", "Ключ", 170), ("acc", "Доступы", 160),
                     ("status", "Статус", 80), ("dev", "Устройств", 80), ("exp", "До", 100)):
         tv.heading(c, text=h)
@@ -201,6 +201,16 @@ def build_admin_tab(parent, refresh_access):
                       ("Отвязать железо", lambda: unbind()), ("Переименовать", lambda: rename()),
                       ("Удалить", lambda: remove()), ("Обновить", lambda: reload())):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
+    ttk.Button(bar, text="Массово…", style="Accent.TButton", command=lambda: bulk_dialog()).pack(side="left", padx=(10, 2))
+    bar2 = ttk.Frame(parent)
+    bar2.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
+    ttk.Label(bar2, text="Выбрать:", style="Muted.TLabel").pack(side="left", padx=(0, 4))
+    for text, pred in (("все", lambda k: True), ("активные", lambda k: k["status"] == "active"),
+                       ("истёкшие", lambda k: k["status"] == "expired"), ("отозванные", lambda k: k["status"] == "revoked"),
+                       ("без устройств", lambda k: not k["devices"])):
+        ttk.Button(bar2, text=text, command=lambda pr=pred: sel_where(pr)).pack(side="left", padx=2)
+    ttk.Button(bar2, text="снять выбор", command=lambda: tv.selection_set(())).pack(side="left", padx=2)
+    ttk.Label(bar2, text="  (Ctrl/Shift + клик - несколько ключей)", style="Muted.TLabel").pack(side="left")
 
     keys_cache = {}
     try:
@@ -235,8 +245,20 @@ def build_admin_tab(parent, refresh_access):
         return mv.get().strip()
 
     def selected():
+        """Один выбранный ключ (для действий над одним ключом). Несколько - нельзя: есть «Массово…»."""
         s = tv.selection()
+        if len(s) > 1:
+            login_status.set("Выбрано несколько ключей: для них есть кнопка «Массово…»")
+            return None
         return keys_cache.get(s[0]) if s else None
+
+    def sel_where(pred):
+        ids = [i for i, k in keys_cache.items() if pred(k)]
+        tv.selection_set(ids)
+        login_status.set(f"Выбрано ключей: {len(ids)}")
+
+    tv.bind("<<TreeviewSelect>>", lambda e: login_status.set(f"Выбрано ключей: {len(tv.selection())}") if len(tv.selection()) > 1 else None)
+    tv.bind("<Control-a>", lambda e: (tv.selection_set(tv.get_children()), "break")[1])
 
     def run(fn, done=None):
         def work():
@@ -389,6 +411,122 @@ def build_admin_tab(parent, refresh_access):
             return
         if messagebox.askyesno("Удалить", f"Удалить ключ «{k['name'] or k['key']}» навсегда?", parent=parent):
             run(lambda: L.admin("delete", _master["token"], {"key": k["key"]}), lambda _: reload())
+
+    # ------------------------------------------------ массовые операции
+    def run_bulk(tasks, title):
+        """tasks: [(подпись, функция)]. Идут по очереди в потоке, прогресс - в строке статуса."""
+        n = len(tasks)
+
+        def work():
+            ok, errs = 0, []
+            for i, (label, fn) in enumerate(tasks, 1):
+                try:
+                    fn()
+                    ok += 1
+                except Exception as ex:
+                    errs.append(f"{label}: {ex}")
+                q.put(("ok", lambda v: login_status.set(f"{title}: {v[0]} из {v[1]}…"), (i, n)))
+                time.sleep(0.05)
+            q.put(("ok", lambda v: bulk_done(title, v[0], v[1], v[2]), (ok, n, errs)))
+        login_status.set(f"{title}: 0 из {n}…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def bulk_done(title, ok, n, errs):
+        text = f"{title}: готово {ok} из {n}."
+        if errs:
+            text += "\n\nНе удалось:\n" + "\n".join(errs[:10]) + (f"\n… и ещё {len(errs) - 10}" if len(errs) > 10 else "")
+        messagebox.showinfo("Массовое изменение", text, parent=parent)
+        reload()
+
+    def bulk_dialog():
+        if not _master["token"]:
+            reload()
+            return
+        sel = [keys_cache[i] for i in tv.selection() if i in keys_cache]
+        if not sel:
+            messagebox.showinfo("Массово", "Сначала выбери ключи в таблице (Ctrl/Shift + клик) или кнопками «Выбрать».",
+                                parent=parent)
+            return
+        dlg = tk.Toplevel(parent)
+        dlg.title("Массовое изменение")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        dlg.grab_set()
+        ttk.Label(dlg, text=f"Выбрано ключей: {len(sel)}", font=T.FONT_TITLE).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(12, 2))
+        ttk.Label(dlg, text="Выбери, что сделать со всеми ними:", style="Muted.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=14)
+        act = tk.StringVar(value="add")
+        ACTS = [("add", "Выдать доступы (добавить к текущим)"), ("remove", "Забрать доступы"),
+                ("set", "Заменить доступы на отмеченные"), ("days", "Изменить срок (дней от сегодня)"),
+                ("revoke", "Отозвать ключи"), ("restore", "Вернуть отозванные"),
+                ("unbind", "Отвязать от компьютеров"), ("delete", "Удалить навсегда")]
+        left = ttk.Frame(dlg)
+        left.grid(row=2, column=0, sticky="nw", padx=14, pady=8)
+        for k_, t_ in ACTS:
+            ttk.Radiobutton(left, text=t_, value=k_, variable=act).pack(anchor="w", pady=1)
+        right = ttk.LabelFrame(dlg, text="Параметры")
+        right.grid(row=2, column=1, sticky="nw", padx=(0, 14), pady=8)
+        acc_vars = {}
+        for a in L.LOCKED:
+            v = tk.BooleanVar(value=False)
+            acc_vars[a] = v
+            ttk.Checkbutton(right, text=L.ACCESS_NAMES.get(a, a), variable=v).pack(anchor="w", padx=8, pady=1)
+        days_v = tk.StringVar(value="30")
+        row = ttk.Frame(right)
+        row.pack(fill="x", padx=8, pady=(8, 6))
+        ttk.Label(row, text="Дней (0 = бессрочно):").pack(side="left")
+        ttk.Entry(row, textvariable=days_v, width=7).pack(side="left", padx=4)
+
+        def apply():
+            a = act.get()
+            chosen = [x for x, v in acc_vars.items() if v.get()]
+            tok = _master["token"]
+            tasks = []
+            if a in ("add", "remove", "set"):
+                if not chosen and a != "set":
+                    messagebox.showinfo("Массово", "Отметь хотя бы один доступ справа.", parent=dlg)
+                    return
+                for k in sel:
+                    cur = set(k["accesses"])
+                    new = (cur | set(chosen)) if a == "add" else (cur - set(chosen)) if a == "remove" else set(chosen)
+                    if new != cur:
+                        tasks.append((k["name"] or k["key"], lambda k=k, new=new: L.admin(
+                            "update", tok, {"key": k["key"], "accesses": sorted(new)})))
+                title = {"add": "Выдача доступов", "remove": "Снятие доступов", "set": "Замена доступов"}[a]
+            elif a == "days":
+                s = days_v.get().strip()
+                if not s.isdigit():
+                    messagebox.showinfo("Массово", "Введи число дней (0 = бессрочно).", parent=dlg)
+                    return
+                d = int(s)
+                tasks = [(k["name"] or k["key"], lambda k=k: L.admin("update", tok, {"key": k["key"], "days": d})) for k in sel]
+                title = "Изменение срока"
+            elif a in ("revoke", "restore"):
+                want = a == "revoke"
+                tasks = [(k["name"] or k["key"], lambda k=k: L.admin("update", tok, {"key": k["key"], "revoked": want}))
+                         for k in sel if (k["status"] == "revoked") != want]
+                title = "Отзыв ключей" if want else "Возврат ключей"
+            elif a == "unbind":
+                tasks = [(k["name"] or k["key"], lambda k=k: L.admin("unbind", tok, {"key": k["key"]})) for k in sel]
+                title = "Отвязка"
+            else:
+                tasks = [(k["name"] or k["key"], lambda k=k: L.admin("delete", tok, {"key": k["key"]})) for k in sel]
+                title = "Удаление"
+            if not tasks:
+                messagebox.showinfo("Массово", "Для выбранных ключей менять нечего.", parent=dlg)
+                return
+            if a in ("revoke", "unbind", "delete"):
+                if not messagebox.askyesno("Подтверди", f"{title}: {len(tasks)} ключей. Продолжить?", parent=dlg):
+                    return
+            dlg.destroy()
+            run_bulk(tasks, title)
+        ttk.Button(dlg, text="Применить ко всем выбранным", style="Accent.TButton", command=apply).grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 12))
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
 
     def pump():
         try:

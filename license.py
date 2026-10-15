@@ -28,8 +28,8 @@ MASTER_KEYS = []
 
 OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
 FREE = {"ram", "cook", "market"}           # всегда доступно без ключа
-LOCKED = ["bot", "afk", "fish", "sand"]  # под ключом
-ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "sand": "Шлифовка",
+LOCKED = ["bot", "afk", "fish"]  # под ключом
+ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка",
                 "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок"}
 
 
