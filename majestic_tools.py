@@ -41,6 +41,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память, которую держит игра"),
     ("cook", "♨", "Готовка", "Калькулятор блюд, таймеры и уведомления в Telegram"),
     ("market", "⚖", "Рынок", "Цены Маркетплейса по серверам и где выгодно купить и продать (официальное API Majestic)"),
+    ("rec", "⏺", "Запись", "Запись экрана и нажатий для разбора: по ней можно восстановить логику нового бота"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
@@ -176,8 +177,9 @@ def main():
 
     def visible_pages():
         acc = access["set"]
-        out = [HOME] + [p for p in PAGES if p[0] in acc]
-        if L.has_master():
+        out = [HOME] + [p for p in PAGES if p[0] in acc and p[0] != "rec"]
+        if L.has_master():                         # инструменты владельца: запись и админка
+            out.append(next(p for p in PAGES if p[0] == "rec"))
             out.append(ADMIN)
         return out
 
@@ -293,6 +295,11 @@ def main():
         stops.append(market.build_market_tab(pages["market"]))
     except Exception as ex:
         failed(pages["market"], "Рынок", ex)
+    try:
+        import recorder
+        stops.append(recorder.build_rec_tab(pages["rec"]))
+    except Exception as ex:
+        failed(pages["rec"], "Запись", ex)
     try:
         licenseui.build_admin_tab(pages["admin"], refresh_access)
     except Exception as ex:

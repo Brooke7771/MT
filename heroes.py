@@ -4,6 +4,7 @@
   швейный   - строчка, по которой бежит игла;
   анти-АФК  - кольцо обратного отсчёта и ряд последних нажатых клавиш.
 Данные приходят от Dashboard (widgets.py): set_data(d, секунды_работы, в_час)."""
+import os
 import math
 import time
 import tkinter as tk
@@ -581,5 +582,56 @@ class MarketHero(Hero):
                                                   ("Период", f"{s.get('period')} дн." if s.get("period") else "—")])
 
 
+# ====================================================================== запись для разбора
+class RecHero(Hero):
+    H = 150
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        s = (self.d.get("rec") or {})
+        t = self.t()
+        rec = bool(s.get("rec"))
+        # --- индикатор REC и таймер
+        rw = 190
+        self.card(0, rw)
+        cx, cy = rw / 2, 52
+        if rec:
+            ph = t % 1.2 / 1.2
+            self.create_oval(cx - 22 - 12 * ph, cy - 22 - 12 * ph, cx + 22 + 12 * ph, cy + 22 + 12 * ph,
+                             outline=mix("#ff3b4e", CARD, ph), width=2)
+            self.create_oval(cx - 22, cy - 22, cx + 22, cy + 22, fill="#ff3b4e", outline="")
+            self.text(cx, cy, "REC", 11, True, "#ffffff", "center")
+        else:
+            self.create_oval(cx - 22, cy - 22, cx + 22, cy + 22, fill="#23232b", outline=EDGE_R, width=2)
+            self.text(cx, cy, "ГОТОВ", 8, True, T.MUTED, "center")
+        sec = int(s.get("t", 0))
+        self.text(cx, 108, f"{sec // 60:02d}:{sec % 60:02d}", 22, True, T.TEXT if rec else T.MUTED, "center")
+        self.text(cx, 134, "длительность", 8, False, T.MUTED, "center")
+        # --- параметры записи
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Запись")
+        half = (x1 - x0 - 36) / 2
+        cells = [("Кадров/с", f"{s.get('fps', 0):.1f}"), ("Размер", f"{s.get('mb', 0):.0f} МБ"),
+                 ("События ввода", f"{s.get('events', 0)}"), ("Метки", f"{s.get('marks', 0)}")]
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 50 + (i // 2) * 40
+            self.label(x, y, lab)
+            self.text(x, y + 16, val, 12, True)
+        drop = s.get("dropped", 0)
+        self.text(x0 + 18, H - 16, ("Потеряно кадров: %d" % drop) if drop else (
+            os.path.basename(s.get("folder", "")) or "Нажми горячую клавишу или кнопку «Начать запись»"),
+                  8, False, T.WARN if drop else T.MUTED)
+        # --- счётчик
+        self.counter_card(x1 + 10, W, "Кадров", [("Время", fmt_time(sec)), ("Размер", f"{s.get('mb', 0):.0f} МБ")])
+
+
+EDGE_R = "#2d2d38"
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero, "market": MarketHero}
+          "admin": AdminHero, "market": MarketHero, "rec": RecHero}
