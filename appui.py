@@ -25,8 +25,8 @@ def _lerp(a, b, k):
 
 # ====================================================================== боковое меню
 class Sidebar(tk.Canvas):
-    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk"]), ("УТИЛИТЫ", ["ram", "cook", "market"]),
-              ("СИСТЕМА", ["rec", "test", "admin"])]
+    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market"]),
+              ("СИСТЕМА", ["rec", "admin"])]
     ITEM_H, GAP, TOP = 42, 4, 98
 
     def __init__(self, parent, on_select, on_toggle, get_toggle, switchable):

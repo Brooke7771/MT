@@ -43,7 +43,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("market", "⚖", "Рынок", "Цены Маркетплейса по серверам и где выгодно купить и продать (официальное API Majestic)"),
     ("rec", "⏺", "Запись", "Запись экрана и нажатий для разбора: по ней можно восстановить логику нового бота"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
-    ("test", "⚗", "Тест", "Новые боты на проверке: видны только владельцу (сюда добавляем то, что ещё не готово для всех)"),
+    ("test", "⚗", "Тест", "Боты на проверке: у каждого свой переключатель; доступ выдаётся ключом"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -179,10 +179,11 @@ def main():
 
     def visible_pages():
         acc = access["set"]
-        out = [HOME] + [p for p in PAGES if p[0] in acc and p[0] != "rec"]
-        if L.has_master():                         # инструменты владельца: запись, тест новых ботов, админка
-            out.append(next(p for p in PAGES if p[0] == "rec"))
+        out = [HOME] + [p for p in PAGES if p[0] in acc and p[0] not in ("rec", "test")]
+        if "test" in acc or L.has_master():        # «Тест»: по ключу (доступ test) или владельцу
             out.append(next(p for p in PAGES if p[0] == "test"))
+        if L.has_master():                         # инструменты владельца: запись и админка
+            out.append(next(p for p in PAGES if p[0] == "rec"))
             out.append(ADMIN)
         return out
 
@@ -234,9 +235,57 @@ def main():
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
     built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
-    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка"}
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "test": "Тест"}
+
+    # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
+    TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab")]
+    names["sand"] = "Шлифовка"
+
+    def make_test():
+        """Страница «Тест»: сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
+        page = pages["test"]
+        strip = ttk.Frame(page)
+        strip.pack(fill="x", padx=2, pady=(0, 6))
+        ttk.Label(strip, text="Включить бота:", style="Muted.TLabel").pack(side="left", padx=(4, 10))
+        nb = ttk.Notebook(page)
+        nb.pack(fill="both", expand=True, padx=2, pady=2)
+        order, vars_, stops_ = [], {}, []
+        for tkey, title, mod, fn in TEST_BOTS:
+            v = tk.BooleanVar(value=switches.is_on(tkey))
+            vars_[tkey] = v
+            ttk.Checkbutton(strip, text=title, variable=v,
+                            command=lambda k=tkey, v=v: switches.set_on(k, v.get())).pack(side="left", padx=10)
+            fr = ttk.Frame(nb)
+            nb.add(fr, text=title)
+            order.append(tkey)
+            try:
+                stops_.append(getattr(__import__(mod), fn)(fr))
+            except Exception as ex:
+                failed(fr, title, ex)
+        switches.listen(lambda k, val: root.after(0, lambda: k in vars_ and vars_[k].set(bool(val))))
+
+        def tab_changed(e=None):
+            try:
+                test_state["key"] = order[nb.index(nb.select())]
+            except (tk.TclError, IndexError):
+                return
+            if state.get("page") == "test":
+                dash.show(test_state["key"])
+        nb.bind("<<NotebookTabChanged>>", tab_changed)
+        test_state["key"] = order[0] if order else None
+
+        def stop_all():
+            for s in stops_:
+                try:
+                    s()
+                except Exception:
+                    pass
+            test_state["key"] = None
+        return stop_all
 
     def make_tab(key):
+        if key == "test":
+            return make_test()
         if key == "bot":
             import sewing_bot
             return sewing_bot.build_bot_tab(pages["bot"], request_close=close)
@@ -257,14 +306,20 @@ def main():
             if st in stops:
                 stops.remove(st)
         widgets.PROVIDERS.pop(key, None)
+        if key == "test":
+            for tk_, *_ in TEST_BOTS:
+                widgets.PROVIDERS.pop(tk_, None)
+                dash.views.pop(tk_, None)
         for w in list(pages[key].winfo_children()):
             w.destroy()
         dash.views.pop(key, None)
 
     def sync_tabs():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
-        for key in ("bot", "afk", "fish"):
-            if key in access["set"] and key not in built:
+        def allowed(k):
+            return k in access["set"] or (k == "test" and L.has_master())
+        for key in ("bot", "afk", "fish", "test"):
+            if allowed(key) and key not in built:
                 for w in list(pages[key].winfo_children()):
                     w.destroy()
                 try:
@@ -273,11 +328,11 @@ def main():
                     stops.append(st)
                 except Exception as ex:
                     failed(pages[key], NAMES[key], ex)
-            elif key not in access["set"] and key in built:
+            elif not allowed(key) and key in built:
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish") and state["page"] not in access["set"]:
+        if state.get("page") in ("bot", "afk", "fish", "test") and not allowed(state["page"]):
             select("home")
 
     sync_tabs()
@@ -304,34 +359,6 @@ def main():
     except Exception as ex:
         failed(pages["rec"], "Запись", ex)
 
-    # ---------------- страница «Тест»: новые боты на проверке (видна только владельцу).
-    # Чтобы добавить нового бота: дописать строку (ключ, название вкладки, модуль, функция сборки вкладки).
-    TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab")]
-    names["sand"] = "Шлифовка"
-    try:
-        nb = ttk.Notebook(pages["test"])
-        nb.pack(fill="both", expand=True, padx=2, pady=2)
-        order = []
-        for tkey, title, mod, fn in TEST_BOTS:
-            fr = ttk.Frame(nb)
-            nb.add(fr, text=title)
-            order.append(tkey)
-            try:
-                stops.append(getattr(__import__(mod), fn)(fr))
-            except Exception as ex:
-                failed(fr, title, ex)
-
-        def tab_changed(e=None):
-            try:
-                test_state["key"] = order[nb.index(nb.select())]
-            except (tk.TclError, IndexError):
-                return
-            if state.get("page") == "test":
-                dash.show(test_state["key"])
-        nb.bind("<<NotebookTabChanged>>", tab_changed)
-        test_state["key"] = order[0] if order else None
-    except Exception as ex:
-        failed(pages["test"], "Тест", ex)
     try:
         licenseui.build_admin_tab(pages["admin"], refresh_access)
     except Exception as ex:

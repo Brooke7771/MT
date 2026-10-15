@@ -266,7 +266,7 @@ def build_sand_tab(parent):
 
     def toggle():
         if not switches.is_on("sand") and not ctl["active"]:
-            log("Шлифовка выключена в боковом меню - сначала включи её там")
+            log("Шлифовка выключена: включи её переключателем наверху страницы «Тест»")
             return
         ctl["active"] = not ctl["active"]
 
@@ -376,7 +376,7 @@ def build_sand_tab(parent):
                 log("Шлифовка включена: жду мини-игру" if was else "Шлифовка выключена")
             if not ctl["active"]:
                 BUSY["on"] = False
-                ctl["status"] = "Выключен" if switches.is_on("sand") else "Отключён в меню"
+                ctl["status"] = "Выключен" if switches.is_on("sand") else "Выключена переключателем на странице «Тест»"
                 stats["view"] = None
                 time.sleep(0.1)
                 continue
