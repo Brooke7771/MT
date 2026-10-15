@@ -1092,6 +1092,11 @@ def build_antiafk_tab(parent):
                 fishing_busy = fishing.BUSY["on"]
             except Exception:
                 pass
+            try:
+                import sanding
+                fishing_busy = fishing_busy or sanding.BUSY["on"]
+            except Exception:
+                pass
             if SEWING_BUSY["on"] or fishing_busy:
                 e.pause(now)
                 ctl["status"] = "Пауза: работает " + ("швейный бот" if SEWING_BUSY["on"] else "рыбалка")

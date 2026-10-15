@@ -18,10 +18,10 @@ KEY = "#010203"
 CARD = "#13131a"
 EDGE = "#262630"
 TRACK = "#0b0b10"
-ORDER = ["fish", "bot", "afk"]
-TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК"}
-GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻"}
-COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff"}
+ORDER = ["fish", "bot", "afk", "sand"]
+TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347"}
 WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
 CW, CH, GAP = 284, 92, 10
@@ -216,7 +216,7 @@ class Hud:
         t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
         items = dict(d.get("items", []))
-        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий"}[key]
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок"}[key]
         val = items.get(main_label, 0)
         c["num"] += (val - c["num"]) * 0.25
         if int(val) != c["last"]:
@@ -274,6 +274,14 @@ class Hud:
             ny = ry + 5 * math.sin(nx / 14.0)
             cv.create_line(X(nx), ny - 14, X(nx), ny + 2, fill="#e6e6ee", width=2)
             cv.create_polygon(X(nx) - 3, ny + 2, X(nx) + 3, ny + 2, X(nx), ny + 9, fill="#e6e6ee", outline="")
+        elif key == "sand":
+            n_left = int(d.get("left") or 0)
+            if n_left > c.get("max", 0) or not d.get("view"):
+                c["max"] = n_left if d.get("view") else 0
+            frac = 0.0 if not c.get("max") else 1.0 - n_left / c["max"]
+            c["prog"] += (frac - c["prog"]) * 0.3
+            self._bar(X(16), X(230), ry, c["prog"], mix(ac, "#ffffff", 0.3 * pf), 9)
+            self._txt(X(CW - 14), ry, f"{n_left} пятен" if d.get("view") else "жду игру", 11, True, T.TEXT, "e")
         else:
             left, span = d.get("left", 0.0), max(1.0, d.get("span", 1.0))
             frac = min(1.0, max(0.0, 1 - left / span))
@@ -284,7 +292,7 @@ class Hud:
         by = y0 + CH - 17
         self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
         num = str(int(round(c["num"])))
-        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий"}[key]
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок"}[key]
         right = X(CW - 14)
         tail = f" {unit}{rate}"
         self._txt(right, by, tail, 8, False, T.MUTED, "e")

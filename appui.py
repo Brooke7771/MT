@@ -16,7 +16,7 @@ SIDE_W = 240
 CARD = "#15151c"
 EDGE = "#262630"
 DIM = "#5d5d68"
-LOCKED = {"bot", "fish", "afk"}
+LOCKED = {"bot", "fish", "afk", "sand"}
 
 
 def _lerp(a, b, k):
@@ -25,7 +25,7 @@ def _lerp(a, b, k):
 
 # ====================================================================== боковое меню
 class Sidebar(tk.Canvas):
-    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk"]), ("УТИЛИТЫ", ["ram", "cook", "market"]),
+    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk", "sand"]), ("УТИЛИТЫ", ["ram", "cook", "market"]),
               ("СИСТЕМА", ["rec", "admin"])]
     ITEM_H, GAP, TOP = 42, 4, 98
 
@@ -203,6 +203,7 @@ TILES = [
     ("bot", "✂", "Швейный бот", "Автошитьё в ателье"),
     ("fish", "⚓", "Рыбалка", "Полный цикл ловли"),
     ("afk", "♻", "Анти-АФК", "Нажатия, еда и вода"),
+    ("sand", "⚒", "Шлифовка", "Мини-игра шлифовки досок"),
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память игры"),
     ("cook", "♨", "Готовка", "Калькулятор и таймеры"),
     ("market", "⚖", "Рынок", "Цены по серверам, где выгодно"),
@@ -353,7 +354,7 @@ class HomePage(tk.Canvas):
                     return lab[0], col, (f"{n} позиций" if n else "")
                 return lab[0], col, ""
             items = d.get("items") or [("", 0)]
-            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий"}.get(key, "")
+            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок"}.get(key, "")
             metric = f"{items[0][1]} {unit}"
             st = str(d.get("status", ""))
             if d.get("active"):
@@ -432,12 +433,12 @@ class HomePage(tk.Canvas):
             import stats
         except Exception:
             stats = None
-        order = [k for k in ("fish", "bot", "afk") if k in locked_ok]
+        order = [k for k in ("fish", "bot", "afk", "sand") if k in locked_ok]
         if stats and order:
             ys = y
             self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
             y += 24
-            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий"}
+            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано"}
             cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
             secs = sum(stats.get(k)["secs"] for k in order)
             cells.append(("#time", "Время работы", secs))

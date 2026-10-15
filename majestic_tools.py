@@ -43,6 +43,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("market", "⚖", "Рынок", "Цены Маркетплейса по серверам и где выгодно купить и продать (официальное API Majestic)"),
     ("rec", "⏺", "Запись", "Запись экрана и нажатий для разбора: по ней можно восстановить логику нового бота"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
+    ("sand", "⚒", "Шлифовка", "Мини-игра шлифовки досок: шлифмашинка сама находит и счищает пятна (E жмёшь сам)"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -231,7 +232,7 @@ def main():
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
     built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
-    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка"}
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "sand": "Шлифовка"}
 
     def make_tab(key):
         if key == "bot":
@@ -240,6 +241,9 @@ def main():
         if key == "afk":
             import antiafk
             return antiafk.build_antiafk_tab(pages["afk"])
+        if key == "sand":
+            import sanding
+            return sanding.build_sand_tab(pages["sand"])
         import fishing
         return fishing.build_fishing_tab(pages["fish"])
 
@@ -260,7 +264,7 @@ def main():
 
     def sync_tabs():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
-        for key in ("bot", "afk", "fish"):
+        for key in ("bot", "afk", "fish", "sand"):
             if key in access["set"] and key not in built:
                 for w in list(pages[key].winfo_children()):
                     w.destroy()
@@ -274,7 +278,7 @@ def main():
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish") and state["page"] not in access["set"]:
+        if state.get("page") in ("bot", "afk", "fish", "sand") and state["page"] not in access["set"]:
             select("home")
 
     sync_tabs()

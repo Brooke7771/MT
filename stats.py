@@ -7,7 +7,7 @@ import sys
 import json
 import time
 
-MAIN = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий"}     # главный счётчик каждого бота
+MAIN = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок"}     # главный счётчик каждого бота
 _data = {}
 _state = {"loaded": False, "dirty": False, "saved": 0.0}
 

@@ -633,5 +633,64 @@ class RecHero(Hero):
 EDGE_R = "#2d2d38"
 
 
+# ====================================================================== шлифовка
+class SandHero(Hero):
+    H = 150
+    BX0, BY0, BX1, BY1 = 573, 330, 1348, 824          # доска в координатах экрана 1080p
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        view = d.get("view")
+        act = bool(d.get("active"))
+        # --- карта доски: то, что видит бот
+        rw = 214
+        self.card(0, rw, fill="#16130f", outline="#3a2d1e")
+        bw = rw - 28
+        bh = bw * (self.BY1 - self.BY0) / (self.BX1 - self.BX0)
+        ox, oy = 14, (H - bh) / 2
+        k = bw / (self.BX1 - self.BX0)
+        _rrect(self, ox, oy, ox + bw, oy + bh, 6, fill="#c98f4f" if view else "#3a2d1e", outline="#5b4325")
+        for i in range(1, 8):                          # швы между планками
+            x = ox + bw * i / 8
+            self.create_line(x, oy + 3, x, oy + bh - 3, fill="#a8763d" if view else "#2c2216")
+        if view:
+            for (sx, sy, area) in view.get("stains", []):
+                r = max(3.0, math.sqrt(area / math.pi) * k)
+                px, py = ox + (sx - self.BX0) * k, oy + (sy - self.BY0) * k
+                self.create_oval(px - r, py - r, px + r, py + r, fill="#2b1a10", outline="")
+            tg = view.get("t")
+            if tg:
+                px, py = ox + (tg[0] - self.BX0) * k, oy + (tg[1] - self.BY0) * k
+                rr = 6 + 3 * math.sin(t * 8)
+                self.create_oval(px - rr, py - rr, px + rr, py + rr, outline="#ff4d6d", width=2)
+            g = view.get("g")
+            if g:
+                px, py = ox + (g[0] - self.BX0) * k, oy + (g[1] - self.BY0) * k
+                self.create_oval(px - 45 * k, py - 45 * k, px + 45 * k, py + 45 * k, fill="#46d36b", outline="#ffffff", width=1)
+        else:
+            self.text(ox + bw / 2, oy + bh / 2, "жду\nмини-игру" if act else "выключено", 9, True, T.MUTED, "center")
+        # --- состояние
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Шлифовка")
+        st = str(d.get("status") or "")
+        self.text(x0 + 18, 50, st, 12, True, T.TEXT if act else T.MUTED)
+        n_left = int(d.get("left") or 0)
+        cells = [("Осталось пятен", str(n_left) if view else "—"), ("Скорость", f"{d.get('vmax', 0)} px/с"),
+                 ("В час", f"{self.rate}"), ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, "Досок", [("Пятен", str(self.shown("Пятен"))), ("В час", f"{self.rate}")],
+                          (d.get("life") or {}).get("count"))
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero, "market": MarketHero, "rec": RecHero}
+          "admin": AdminHero, "market": MarketHero, "rec": RecHero, "sand": SandHero}
