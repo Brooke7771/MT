@@ -376,7 +376,7 @@ def build_sand_tab(parent):
                 log("Шлифовка включена: жду мини-игру" if was else "Шлифовка выключена")
             if not ctl["active"]:
                 BUSY["on"] = False
-                ctl["status"] = "Выключен" if switches.is_on("sand") else "Выключена переключателем на странице «Тест»"
+                ctl["status"] = "Выключен" if switches.is_on("sand") else "Выключен (тумблер)"
                 stats["view"] = None
                 time.sleep(0.1)
                 continue

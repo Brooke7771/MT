@@ -144,6 +144,9 @@ def apply(root):
                arrowcolor=[("active", ACCENT_HOVER)])
     st.configure("TCombobox", selectbackground=FIELD, selectforeground=TEXT)
 
+    st.configure("Horizontal.TScale", background=ACCENT, troughcolor=FIELD, bordercolor=BORDER,
+                 lightcolor=ACCENT, darkcolor=ACCENT)
+    st.map("Horizontal.TScale", background=[("active", ACCENT_HOVER)])
     st.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
     st.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(16, 8), borderwidth=0, font=FONT_BOLD)
     st.map("TNotebook.Tab", background=[("selected", ACCENT_DIM), ("active", "#202027")],

@@ -1095,6 +1095,8 @@ def build_antiafk_tab(parent):
             try:
                 import sanding
                 fishing_busy = fishing_busy or sanding.BUSY["on"]
+                import clicker
+                fishing_busy = fishing_busy or clicker.BUSY["on"]
             except Exception:
                 pass
             if SEWING_BUSY["on"] or fishing_busy:
