@@ -213,6 +213,7 @@ def build_admin_tab(parent, refresh_access):
     ttk.Label(bar2, text="  (Ctrl/Shift + клик - несколько ключей)", style="Muted.TLabel").pack(side="left")
 
     keys_cache = {}
+    pending = {"exp": None}        # ожидаемые доступы после изменения: сверяем с тем, что вернул сервер
     try:
         import widgets
 
@@ -293,6 +294,17 @@ def build_admin_tab(parent, refresh_access):
             tv.insert("", "end", iid=iid, tags=tags, values=(
                 k["name"] or "—", k["key"], acc, {"active": "активен", "revoked": "отозван",
                 "expired": "истёк"}[k["status"]], f"{len(k['devices'])}/{k['max_devices']}", exp))
+        exp, pending["exp"] = pending["exp"], None
+        if exp:                    # сервер мог молча отбросить неизвестный ему доступ (старая версия сервера)
+            bad = [keys_cache[k]["name"] or k for k, want in exp.items()
+                   if k in keys_cache and set(keys_cache[k]["accesses"]) != want]
+            if bad:
+                messagebox.showwarning(
+                    "Сервер не сохранил доступы",
+                    "Для этих ключей доступы на сервере не совпали с выбранными:\n\n" + "\n".join(bad[:10])
+                    + ("\n…" if len(bad) > 10 else "") +
+                    "\n\nСкорее всего, сервер ключей не знает какой-то из доступов (нужно обновить сервер на Render).",
+                    parent=parent)
         refresh_access()
 
     # ------------------------------------------------ окно создания/редактирования доступов
@@ -370,6 +382,7 @@ def build_admin_tab(parent, refresh_access):
         d = access_dialog(f"Доступы: {k['name'] or k['key']}", k["accesses"], with_name=False)
         if d is None:
             return
+        pending["exp"] = {k["key"]: set(d["accesses"])}
         run(lambda: L.admin("update", _master["token"], {"key": k["key"], "accesses": d["accesses"]}), lambda _: reload())
 
     def prolong():
@@ -483,6 +496,7 @@ def build_admin_tab(parent, refresh_access):
             chosen = [x for x, v in acc_vars.items() if v.get()]
             tok = _master["token"]
             tasks = []
+            expect = {}
             if a in ("add", "remove", "set"):
                 if not chosen and a != "set":
                     messagebox.showinfo("Массово", "Отметь хотя бы один доступ справа.", parent=dlg)
@@ -491,6 +505,7 @@ def build_admin_tab(parent, refresh_access):
                     cur = set(k["accesses"])
                     new = (cur | set(chosen)) if a == "add" else (cur - set(chosen)) if a == "remove" else set(chosen)
                     if new != cur:
+                        expect[k["key"]] = new
                         tasks.append((k["name"] or k["key"], lambda k=k, new=new: L.admin(
                             "update", tok, {"key": k["key"], "accesses": sorted(new)})))
                 title = {"add": "Выдача доступов", "remove": "Снятие доступов", "set": "Замена доступов"}[a]
@@ -520,6 +535,7 @@ def build_admin_tab(parent, refresh_access):
                 if not messagebox.askyesno("Подтверди", f"{title}: {len(tasks)} ключей. Продолжить?", parent=dlg):
                     return
             dlg.destroy()
+            pending["exp"] = expect or None
             run_bulk(tasks, title)
         ttk.Button(dlg, text="Применить ко всем выбранным", style="Accent.TButton", command=apply).grid(
             row=3, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 12))
