@@ -27,10 +27,10 @@ SERVER_URL = "https://mt-server-oyxh.onrender.com"
 MASTER_KEYS = []
 
 OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
-FREE = {"ram", "cook", "market"}           # всегда доступно без ключа
+FREE = {"ram", "cook", "market", "pm"}           # всегда доступно без ключа
 LOCKED = ["bot", "afk", "fish", "test"]  # под ключом ("test" - страница с ботами на проверке)
 ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "test": "Тест (боты на проверке)",
-                "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок"}
+                "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок", "pm": "PM (таблица по скринам)"}
 
 
 def app_dir():

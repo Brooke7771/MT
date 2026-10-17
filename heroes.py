@@ -584,6 +584,58 @@ class MarketHero(Hero):
                                                   ("Период", f"{s.get('period')} дн." if s.get("period") else "—")])
 
 
+# ====================================================================== PM по скринам
+class PmHero(Hero):
+    H = 150
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        s = (self.d.get("pm") or {})
+        t = self.t()
+        # --- кольцо: какая доля тех, кто в сети, катает вызовы
+        rw = 190
+        self.card(0, rw)
+        cx, cy, r = rw / 2, H / 2 - 2, 46
+        on, calls = s.get("online", 0), s.get("calls", 0)
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=9)
+        if s.get("busy"):
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90 - (t * 240) % 360, extent=-90, style="arc",
+                            outline=T.ACCENT, width=9)
+        elif on and calls:
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.9 * min(1.0, calls / float(on)),
+                            style="arc", outline=T.OK, width=9)
+        self.text(cx, cy - 6, f"{calls}/{on}", 20, True, T.TEXT, "center")
+        self.text(cx, cy + 16, "катают / в сети", 8, False, T.MUTED, "center")
+        # --- середина: что делать
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Проверка состава")
+        if s.get("busy"):
+            self.text((x0 + x1) / 2, H / 2 + 6, str(s["busy"]) + "." * (int(t * 2) % 4), 11, True, T.TEXT, "center")
+        elif not s.get("ok", True):
+            self.text((x0 + x1) / 2, H / 2 + 6, "Распознавание Windows недоступно - см. подсказку ниже", 10, False,
+                      T.WARN, "center")
+        elif not s.get("n"):
+            self.text((x0 + x1) / 2, H / 2 - 4, "Добавь скрины «Коллеги» и «Вызовы» (История)", 11, True, T.TEXT, "center")
+            self.text((x0 + x1) / 2, H / 2 + 20, "Win+Shift+S → Ctrl+V, кнопка или папка со скринами", 9, False,
+                      T.MUTED, "center")
+        else:
+            rows = [("Не катают - текст /f готов", s.get("ask", 0), "#ffb347"),
+                    ("Катают вызовы", s.get("calls", 0), T.OK),
+                    ("Изменений с прошлого снимка", s.get("changes", 0), T.ACCENT)]
+            for i, (lab, v, col) in enumerate(rows):
+                y = 56 + i * 28
+                self.create_oval(x0 + 18, y - 4, x0 + 26, y + 4, fill=col, outline="")
+                self.text(x0 + 36, y, lab, 10, True)
+                self.text(x1 - 18, y, str(v), 11, True, col, "e")
+        self.counter_card(x1 + 10, W, "Сотрудников", [("Скринов", str(s.get("shots", 0))),
+                                                      ("В сети", str(s.get("online", 0)))])
+
+
 # ====================================================================== запись для разбора
 class RecHero(Hero):
     H = 150
@@ -695,4 +747,4 @@ class SandHero(Hero):
 
 
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero, "market": MarketHero, "rec": RecHero, "sand": SandHero}
+          "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero}

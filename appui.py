@@ -25,7 +25,7 @@ def _lerp(a, b, k):
 
 # ====================================================================== боковое меню
 class Sidebar(tk.Canvas):
-    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market"]),
+    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
               ("СИСТЕМА", ["rec", "admin"])]
     ITEM_H, GAP, TOP = 42, 4, 98
 
@@ -206,6 +206,7 @@ TILES = [
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память игры"),
     ("cook", "♨", "Готовка", "Калькулятор и таймеры"),
     ("market", "⚖", "Рынок", "Цены по серверам, где выгодно"),
+    ("pm", "☰", "PM", "Таблица по скринам планшета"),
 ]
 TIPS = [
     "Включай нужных ботов переключателем в меню слева: выключенный бот не реагирует на горячую клавишу.",
@@ -348,6 +349,9 @@ class HomePage(tk.Canvas):
                 if key == "cook":
                     n = (d.get("items") or [("", 0)])[0][1]
                     return lab[0], col, (f"{n} идёт" if n else "")
+                if key == "pm":
+                    m = d.get("pm") or {}
+                    return lab[0], col, (f"{m.get('online', 0)} в сети" if m.get("n") else "")
                 if key == "market":
                     m = d.get("market") or {}
                     if m.get("alerts_today"):

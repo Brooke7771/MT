@@ -17,3 +17,5 @@ market_history/
 market_watch.json
 market_alerts.json
 recordings/
+pm_snapshots/
+pm_clipboard/
