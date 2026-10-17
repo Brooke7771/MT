@@ -13,8 +13,8 @@ def app_dir():
 
 
 PATH = os.path.join(app_dir(), "modules_config.json")
-NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "sand": "Шлифовка", "click": "Кликер"}
-ENABLED = {"bot": True, "afk": False, "fish": False, "sand": False, "click": False}     # новые боты по умолчанию выключены
+NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "sand": "Шлифовка", "click": "Кликер", "wood": "Лесоруб"}
+ENABLED = {"bot": True, "afk": False, "fish": False, "sand": False, "click": False, "wood": False}     # новые боты по умолчанию выключены
 _listeners = []
 
 try:

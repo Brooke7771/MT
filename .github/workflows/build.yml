@@ -35,7 +35,7 @@ jobs:
           Get-Content version.py
 
       - name: Сборка
-        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --name MajesticTools majestic_tools.py
+        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --add-data "woodcut_assets.npz;." --name MajesticTools majestic_tools.py
 
       - name: Приложить exe к релизу
         if: github.event_name == 'release'

@@ -102,7 +102,7 @@ def clear_key():
 _hooks = []
 _wipe = {"pending": False}
 BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png",
-             "stats.json")
+             "stats.json", "sanding_config.json", "clicker_config.json", "woodcut_config.json")
 BOT_DIRS = ("antiafk_templates",)
 BOT_GLOBS = ("debug_fishing_*",)
 

@@ -746,5 +746,62 @@ class SandHero(Hero):
                           (d.get("life") or {}).get("count"))
 
 
+# ====================================================================== лесоруб
+class WoodHero(Hero):
+    H = 150
+    A, B = (680, 510), (1232, 330)                      # ось бревна в мини-игре (1080p)
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        act, state = bool(d.get("active")), d.get("state")
+        view = d.get("view") or {}
+        # --- бревно и ветки, которые видит бот
+        rw = 214
+        self.card(0, rw, fill="#10140d", outline="#2b3a1e")
+        k, ox, oy = 0.27, 14 - 600 * 0.27, 30 - 250 * 0.27
+        P = lambda p: (ox + p[0] * k, oy + p[1] * k)
+        (ax, ay), (bx, by) = P(self.A), P(self.B)
+        self.create_polygon(14, H - 40, rw - 40, H - 70, rw - 14, H - 34, 40, H - 12, fill="#2f6b22" if state == "mini" else "#1c2b16",
+                            outline="")
+        self.create_line(ax, ay, bx, by, fill="#8a5a33" if state else "#3a2a1c", width=16, capstyle="round")
+        if state == "mini":
+            for p in view.get("br", []):
+                x, y = P(p)
+                self.create_line(x, y, x + 6, y - 10, fill="#d9b48a", width=2)
+                self.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#ffcc66", outline="")
+            tg = view.get("t")
+            if tg:
+                x, y = P(tg)
+                r = 6 + 3 * abs((t * 4) % 2 - 1)
+                self.create_oval(x - r, y - r, x + r, y + r, outline="#ff4d6d", width=2)
+        elif state == "chop":
+            ph = (t * float(d.get("cps") or 6)) % 1.0           # взмахи топора
+            cx, cy = rw / 2, 52
+            self.create_line(cx, cy + 30, cx + 26 * (1 - ph), cy - 10 * (1 - ph), fill="#c9c9d1", width=4)
+            self.text(cx, H - 18, "рублю…", 9, True, T.TEXT, "center")
+        else:
+            self.text(rw / 2, 40, "жду рубку" if act else "выключено", 9, True, T.MUTED, "center")
+        # --- состояние
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Лесоруб")
+        self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        cells = [("Веток на бревне", str(len(view.get("br", []))) if state == "mini" else "—"),
+                 ("Кликов в секунду", f"{float(d.get('cps') or 0):g}"), ("В час", f"{self.rate}"),
+                 ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, "Деревьев", [("Веток", str(self.shown("Веток"))), ("В час", f"{self.rate}")],
+                          (d.get("life") or {}).get("count"))
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero}
+          "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero}

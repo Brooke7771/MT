@@ -240,9 +240,11 @@ def main():
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
     TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
-                 ("click", "Кликер", "clicker", "build_clicker_tab")]
+                 ("click", "Кликер", "clicker", "build_clicker_tab"),
+                 ("wood", "Лесоруб", "woodcut", "build_wood_tab")]
     names["sand"] = "Шлифовка"
     names["click"] = "Кликер"
+    names["wood"] = "Лесоруб"
 
     def make_test():
         """Страница «Тест»: сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
