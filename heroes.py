@@ -539,20 +539,24 @@ class MarketHero(Hero):
             return
         s = (self.d.get("market") or {})
         t = self.t()
-        left, reset = s.get("left", 5), s.get("reset", 0.0)
-        # --- кольцо лимита запросов API
+        # --- кольцо мониторинга: сколько позиций и сколько сработало сегодня
         rw = 190
         self.card(0, rw)
         cx, cy, r = rw / 2, H / 2 - 2, 46
+        n, hits = s.get("watch_n", 0), s.get("alerts_today", 0)
         self.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#26262e", width=9)
-        col = T.OK if left >= 3 else ("#ffb020" if left >= 1 else T.WARN)
-        if left > 0:
-            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.9 * left / 5.0, style="arc",
-                            outline=col, width=9)
-        self.text(cx, cy - 6, f"{left}/5", 20, True, T.TEXT, "center")
-        self.text(cx, cy + 16, "запросов API", 8, False, T.MUTED, "center")
-        if reset > 0 and left < 5:
-            self.text(cx, H - 14, f"восстановится через {int(reset)} с", 8, False, T.MUTED, "center")
+        if s.get("mon_busy"):                                   # идёт проверка - бегущая дуга
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90 - (t * 240) % 360, extent=-90, style="arc",
+                            outline=T.ACCENT, width=9)
+        elif n and hits:
+            self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.9 * min(1.0, hits / float(n)),
+                            style="arc", outline=T.OK, width=9)
+        self.text(cx, cy - 6, str(n), 20, True, T.TEXT, "center")
+        self.text(cx, cy + 16, "в мониторинге", 8, False, T.MUTED, "center")
+        nc = s.get("next_check")
+        self.text(cx, H - 14, (f"сработало сегодня: {hits}" if hits else
+                               (time.strftime("проверка ≈%H:%M", time.localtime(nc)) if nc else "")), 8, False,
+                  T.OK if hits else T.MUTED, "center")
         # --- топ по продажам
         cw = W * 0.27
         x0, x1 = rw + 10, W - cw - 10
@@ -562,9 +566,7 @@ class MarketHero(Hero):
             head += f" · {s['server']} · {s.get('cat', '')}"
         self.label(x0 + 18, 24, head)
         top = s.get("top") or []
-        if not s.get("has_key"):
-            self.text((x0 + x1) / 2, H / 2 + 6, "Введи ключ API (кнопка «Получить ключ» ниже)", 10, False, T.MUTED, "center")
-        elif s.get("error"):
+        if s.get("error"):
             self.text((x0 + x1) / 2, H / 2 + 6, s["error"][:70], 10, False, T.WARN, "center", width=x1 - x0 - 40)
         elif s.get("busy"):
             self.text((x0 + x1) / 2, H / 2 + 6, str(s["busy"]) + "." * (int(t * 2) % 4), 11, True, T.TEXT, "center")

@@ -352,6 +352,8 @@ def main():
         failed(pages["cook"], "Раздел готовки", ex)
     try:
         import market
+        market.HOOKS["toast"] = toasts.push              # в ленту событий рынок пишет сам
+        market.HOOKS["open"] = lambda: (root.deiconify(), root.lift(), select("market"))
         stops.append(market.build_market_tab(pages["market"]))
     except Exception as ex:
         failed(pages["market"], "Рынок", ex)

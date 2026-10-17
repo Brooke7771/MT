@@ -349,6 +349,11 @@ class HomePage(tk.Canvas):
                     n = (d.get("items") or [("", 0)])[0][1]
                     return lab[0], col, (f"{n} идёт" if n else "")
                 if key == "market":
+                    m = d.get("market") or {}
+                    if m.get("alerts_today"):
+                        return lab[0], col, f"сработало: {m['alerts_today']}"
+                    if m.get("watch_n"):
+                        return lab[0], col, f"{m['watch_n']} в мониторинге"
                     n = (d.get("items") or [("", 0)])[0][1]
                     return lab[0], col, (f"{n} позиций" if n else "")
                 return lab[0], col, ""
