@@ -46,7 +46,7 @@ def build_pm_tab(parent):
     q = queue.Queue()
     work = queue.Queue()
     st = {"alive": True, "shots": [], "snap": None, "old": None, "old_label": "", "watch_seen": set(),
-          "watch_t": 0.0, "edits": {}}
+          "watch_t": 0.0, "edits": {}, "marks": PT.load_marks()}
     ok, ocr_msg = pm_ocr.available()
     STATE["ok"] = ok
 
@@ -63,7 +63,7 @@ def build_pm_tab(parent):
     folder_lbl = ttk.Label(bar, text=folder["path"] or "не выбрана", style="Muted.TLabel")
     folder_lbl.pack(side="left")
     ttk.Button(bar, text="Выбрать…", command=lambda: pick_folder()).pack(side="left", padx=4)
-    msg = tk.StringVar(value=("Добавь скрины «Коллеги» и «Вызовы» (История). Можно несколько: они склеятся по статику."
+    msg = tk.StringVar(value=("Добавь скрины «Коллеги», «Вызовы» (История) и группы в телефоне. Можно несколько: они склеятся."
                               if ok else "⚠ " + ocr_msg))
     ttk.Label(parent, textvariable=msg, style="Muted.TLabel" if ok else "Warn.TLabel").pack(anchor="w", padx=10)
 
@@ -86,10 +86,12 @@ def build_pm_tab(parent):
         nb.add(f, text=t_)
         tabs[k_] = f
 
-    cols = ("num", "name", "uid", "rank", "status", "calls")
+    cols = ("num", "name", "uid", "rank", "status", "calls", "group", "brief", "comment")
     et = ttk.Treeview(tabs["emp"], columns=cols, show="headings", selectmode="browse")
-    for c, h, w, a in (("num", "№", 50, "e"), ("name", "Ник", 220, "w"), ("uid", "Статик", 90, "e"),
-                       ("rank", "Ранг", 60, "e"), ("status", "Статус", 210, "w"), ("calls", "Вызовы", 90, "w")):
+    for c, h, w, a in (("num", "№", 44, "e"), ("name", "Ник", 190, "w"), ("uid", "Статик", 76, "e"),
+                       ("rank", "Ранг", 50, "e"), ("status", "Статус", 180, "w"), ("calls", "Вызовы", 86, "w"),
+                       ("group", "Группа", 72, "center"), ("brief", "Брифинг", 76, "center"),
+                       ("comment", "Комментарий", 200, "w")):
         et.heading(c, text=h)
         et.column(c, width=w, anchor=a)
     esb = ttk.Scrollbar(tabs["emp"], orient="vertical", command=et.yview)
@@ -130,6 +132,7 @@ def build_pm_tab(parent):
                       ("Копировать /f", lambda: copy(f_txt.get("1.0", "end").strip()))):
         ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(10, 0))
     ttk.Button(bot, text="Сохранить снимок", style="Accent.TButton", command=lambda: save_snap()).pack(side="right")
+    ttk.Button(bot, text="Сбросить брифинг", command=lambda: reset_brief()).pack(side="right", padx=(0, 6))
     base_var = tk.StringVar()
     base_cb = ttk.Combobox(bot, textvariable=base_var, width=22, state="readonly")
     base_cb.pack(side="right", padx=6)
@@ -184,7 +187,7 @@ def build_pm_tab(parent):
             shots_refresh()
             rebuild()
 
-    KIND = {"colleagues": "Коллеги", "calls": "Вызовы"}
+    KIND = {"colleagues": "Коллеги", "calls": "Вызовы", "group": "Группа"}
 
     def shots_refresh():
         lb.delete(0, "end")
@@ -289,6 +292,7 @@ def build_pm_tab(parent):
             if uid in snap["employees"]:
                 snap["employees"][uid].update(ed)
                 snap["employees"][uid]["doubt"] = []
+        apply_marks(snap)
         st["snap"] = snap
         fill(snap)
 
@@ -305,7 +309,9 @@ def build_pm_tab(parent):
                 tags.append("calls")
             et.insert("", "end", iid=uid, tags=tags, values=(
                 e.get("num") or "", e["name"] + ("  ⚠" if e.get("doubt") else ""), uid, e.get("rank") or "",
-                PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else ""))
+                PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else "",
+                ("✓" if e.get("in_group") else "—") if snap.get("has_group") else "",
+                {"yes": "✓ есть", "no": "✗ нет"}.get(e.get("brief") or "", "·"), e.get("comment") or ""))
         if sel and et.exists(sel[0]):
             et.selection_set(sel[0])
         ct.delete(*ct.get_children())
@@ -329,6 +335,10 @@ def build_pm_tab(parent):
             info.append(f"вызовов на скринах: {len(snap['calls'])} (самый свежий {snap['calls_newest']})")
         else:
             info.append("скринов «Вызовы» нет")
+        if snap.get("has_group"):
+            n_in = sum(1 for e in emps if e.get("in_group"))
+            info.append(f"в группе: {len(snap['group'])}" + (f" из {snap['group_count']}" if snap.get("group_count") else "")
+                        + f", из них в списке PM: {n_in}")
         if snap["unknown"]:
             info.append(f"строк без статика: {len(snap['unknown'])}")
         if any(e.get("doubt") for e in emps):
@@ -374,7 +384,77 @@ def build_pm_tab(parent):
             T.dark_titlebar(dlg)
         except Exception:
             pass
-    et.bind("<Double-1>", edit)
+    # ---- брифинг (щелчок по ячейке) и комментарий (двойной щелчок)
+    def apply_marks(snap):
+        for uid, e in snap["employees"].items():
+            m = st["marks"].get(uid) or {}
+            e["brief"], e["comment"] = m.get("brief", ""), m.get("comment", "")
+
+    def set_mark(uid, **kw):
+        st["marks"].setdefault(uid, {}).update(kw)
+        try:
+            PT.save_marks(st["marks"])
+        except OSError as ex:
+            msg.set(f"Не сохранилось: {ex}")
+        if st["snap"]:
+            apply_marks(st["snap"])
+            fill(st["snap"])
+
+    def cell_of(e):
+        uid = et.identify_row(e.y)
+        col = et.identify_column(e.x)
+        if not uid or not col:
+            return None, None
+        return uid, cols[int(col[1:]) - 1]
+
+    def on_click(e):
+        uid, col = cell_of(e)
+        if col == "brief" and uid:
+            cur = (st["marks"].get(uid) or {}).get("brief", "")
+            set_mark(uid, brief={"": "yes", "yes": "no", "no": ""}[cur])
+        elif col == "comment" and uid:
+            et.after(1, lambda: edit_comment(uid))
+
+    def on_double(e):
+        uid, col = cell_of(e)
+        if col == "brief":
+            on_click(e)                                               # быстрый второй щелчок - тоже переключение
+            return "break"
+        if col == "comment":
+            return "break"
+        edit()
+
+    def edit_comment(uid):
+        if not et.exists(uid) or not et.bbox(uid, "comment"):
+            return
+        for old in [w for w in et.winfo_children() if isinstance(w, tk.Entry)]:
+            old.destroy()
+        x, y, w, h = et.bbox(uid, "comment")
+        var = tk.StringVar(value=(st["marks"].get(uid) or {}).get("comment", ""))
+        ent = tk.Entry(et, textvariable=var, bg=T.FIELD, fg=T.TEXT, insertbackground=T.TEXT, relief="flat",
+                       font=("Segoe UI", 9), highlightthickness=1, highlightbackground=T.ACCENT)
+        ent.place(x=x, y=y, width=max(w, 220), height=h)
+        ent.focus_set()
+        ent.icursor("end")
+
+        def done(save=True):
+            if save:
+                set_mark(uid, comment=var.get().strip())
+            ent.destroy()
+        ent.bind("<Return>", lambda e: done())
+        ent.bind("<Escape>", lambda e: done(False))
+        ent.bind("<FocusOut>", lambda e: done())
+
+    def reset_brief():
+        if not any(m.get("brief") for m in st["marks"].values()):
+            return
+        if messagebox.askyesno("Брифинг", "Сбросить отметки брифинга у всех? Комментарии останутся.", parent=parent):
+            for m in st["marks"].values():
+                m["brief"] = ""
+            set_mark("", brief="")
+
+    et.bind("<Button-1>", on_click, add="+")
+    et.bind("<Double-1>", on_double)
     et.bind("<Return>", edit)
 
     # ---- снимки

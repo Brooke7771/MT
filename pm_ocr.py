@@ -245,7 +245,10 @@ def recognize(path_or_img):
     words = [(t, x / k, y / k, w / k, h / k) for t, x, y, w, h in ocr(small, "ru")]
     tab = find_table(words)
     if not tab:
-        return {"kind": None, "rows": [], "error": "Не нашёл таблицу «Коллеги» или «Вызовы» (История)"}
+        grp = _group(img, words)
+        if grp:
+            return grp
+        return {"kind": None, "rows": [], "error": "Не нашёл таблицу «Коллеги», «Вызовы» (История) или группу в телефоне"}
     kind, a, b, hy = tab
     L = LAYOUT[kind]
     X = lambda x: a * x + b
@@ -295,6 +298,73 @@ def recognize(path_or_img):
         else:
             rows.append(_call(cell))
     return {"kind": kind, "rows": rows, "error": ""}
+
+
+# ---- группа в игровом телефоне: карточки «Имя» (жирно, чёрным) и «Фамилия» (серым) под ним, справа метки отделов.
+# Опоры: «Индикатор над головой» над списком и кнопка «Расформировать группу» под ним (между ними ~425 px при 1080p).
+GROUP_SPAN = 425.0
+
+
+def _group(img, words):
+    ind = [w for w in words if _norm(w[0]) == "индикатор"]
+    dis = [w for w in words if _norm(w[0]).startswith("расформир")]
+    if not ind or not dis:
+        return None
+    wi, wd = ind[0], min(dis, key=lambda w: abs(w[1] - ind[0][1]))
+    yi, yb = wi[2] + wi[4] / 2, wd[2] + wd[4] / 2
+    k = (yb - yi) / GROUP_SPAN
+    if not 0.4 < k < 3:
+        return None
+    x0, x1 = wi[1] + 48 * k, wi[1] + 165 * k
+    y0, y1 = yi + 16 * k, yb - 42 * k
+    box = (int(max(0, x0)), int(max(0, y0)), int(min(img.width, x1)), int(min(img.height, y1)))
+    crop = img.crop(box)
+    up = max(1.0, 2.5 / k)
+    big = crop.resize((int(crop.width * up), int(crop.height * up)), Image.LANCZOS)
+    ws = [(t, x / up, y / up, w / up, h / up) for t, x, y, w, h in ocr(big, "en")]
+    gray = crop.convert("L").load()
+    lines = []
+    for w in sorted(ws, key=lambda w: w[2] + w[4] / 2):
+        cy = w[2] + w[4] / 2
+        if lines and abs(lines[-1]["cy"] - cy) < 8 * k:
+            lines[-1]["w"].append(w)
+        else:
+            lines.append({"cy": cy, "w": [w]})
+    for ln in lines:
+        ln["w"].sort(key=lambda w: w[1])
+        ln["text"] = _clean_name(" ".join(w[0] for w in ln["w"]))
+        top = min(w[2] for w in ln["w"])
+        bot = max(w[2] + w[4] for w in ln["w"])
+        ln["cut"] = top < 2 or bot > crop.height - 2
+        # имя чёрное, фамилия серая: самый тёмный пиксель в рамке слова
+        dark = 255
+        for w in ln["w"]:
+            for yy in range(int(w[2]), int(w[2] + w[4])):
+                for xx in range(int(w[1]), int(w[1] + w[3]), 2):
+                    if 0 <= xx < crop.width and 0 <= yy < crop.height:
+                        dark = min(dark, gray[xx, yy])
+        ln["first"] = dark < 85
+    rows = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        if ln["first"] and not ln["cut"] and ln["text"]:
+            if nxt and not nxt["first"] and nxt["cy"] - ln["cy"] < 32 * k and not nxt["cut"]:
+                rows.append({"name": f"{ln['text']} {nxt['text']}".strip(), "first": ln["text"], "last": nxt["text"],
+                             "doubt": [] if nxt["text"] else ["name"]})
+                i += 2
+                continue
+            if not nxt or nxt["first"]:
+                rows.append({"name": ln["text"], "first": ln["text"], "last": "", "doubt": ["name"]})
+        i += 1
+    # сколько всего в группе: число рядом со значком над поиском
+    count = None
+    for w in words:
+        if w[0].isdigit() and abs((w[2] + w[4] / 2) - (yi - 56 * k)) < 12 * k and w[1] < wi[1] + 60 * k:
+            count = int(w[0])
+            break
+    return {"kind": "group", "rows": rows, "count": count, "error": ""}
 
 
 def _colleague(img, L, X, cy, rh, cell, digits):

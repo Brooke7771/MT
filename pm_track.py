@@ -37,7 +37,13 @@ def merge(results, window_min=15):
     window_min - кто «катает вызовы»: был в истории за столько минут до самого свежего вызова (0 - все)."""
     emp, calls = {}, []
     unknown = []
+    group, group_count, has_group = [], None, False
     for r in results:
+        if r.get("kind") == "group":
+            has_group = True
+            group.extend(r["rows"])
+            if r.get("count"):
+                group_count = max(group_count or 0, r["count"])
         if r.get("kind") == "colleagues":
             rows = r["rows"]
             for i, row in enumerate(rows):                       # пропущенный номер - по соседям
@@ -81,9 +87,83 @@ def merge(results, window_min=15):
                           "offline_since": e.get("offline_since"), "on_calls": uid in on_calls,
                           "calls": on_calls.get(uid, {}).get("n", 0), "doubt": list(e["doubt"])}
     outsiders = {u: v for u, v in on_calls.items() if u not in employees}
+    members = group_members(group)
+    in_group, group_out = match_group(members, employees)
+    for uid, e in employees.items():
+        e["in_group"] = uid in in_group
     return {"taken_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), "employees": employees,
             "complete": complete, "has_calls": bool(uniq), "calls_newest": newest.strftime("%d.%m.%Y %H:%M") if newest else None,
-            "window_min": window_min, "outsiders": outsiders, "calls": uniq, "unknown": unknown}
+            "window_min": window_min, "outsiders": outsiders, "calls": uniq, "unknown": unknown,
+            "has_group": has_group, "group": members, "group_count": group_count, "group_outsiders": group_out}
+
+
+# ====================================================================== группа в телефоне
+def _nk(s):
+    return "".join(ch for ch in (s or "").lower() if ch.isalpha())
+
+
+def group_members(rows):
+    """Склейка списков группы с нескольких скринов: без повторов; «Имя» без фамилии (срезано прокруткой)
+    выбрасывается, если есть полная запись с тем же именем."""
+    full, seen = [], set()
+    for r in rows:
+        if r.get("last") and _nk(r["name"]) not in seen:
+            seen.add(_nk(r["name"]))
+            full.append(r["name"])
+    firsts = {_nk(n.split()[0]) for n in full}
+    for r in rows:
+        if not r.get("last") and _nk(r.get("first")) not in firsts and _nk(r["name"]) not in seen:
+            seen.add(_nk(r["name"]))
+            full.append(r["name"])
+    return full
+
+
+def match_group(members, employees):
+    """-> (статики сотрудников из группы, имена из группы, которых нет среди сотрудников).
+    Сверка по нику с допуском: OCR может спутать пару букв (l/I, 0/O)."""
+    from difflib import SequenceMatcher
+    names = {uid: _nk(e.get("name")) for uid, e in employees.items()}
+    firsts = {uid: _nk((e.get("name") or "").split(" ")[0]) for uid, e in employees.items()}
+    found, out = set(), []
+    for m in members:
+        key, parts = _nk(m), m.split()
+        best, score = None, 0.0
+        for uid, nk in names.items():
+            if len(parts) < 2:                                   # только имя: годится, если оно единственное
+                sc = 1.0 if firsts[uid] == key and list(firsts.values()).count(key) == 1 else 0.0
+            else:
+                sc = SequenceMatcher(None, key, nk).ratio()
+            if sc > score:
+                best, score = uid, sc
+        if best is not None and score >= 0.84:
+            found.add(best)
+        else:
+            out.append(m)
+    return found, out
+
+
+# ====================================================================== отметки вручную (брифинг, комментарий)
+def _marks_path():
+    return os.path.join(data_dir(), "pm_marks.json")
+
+
+def load_marks():
+    try:
+        with open(_marks_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_marks(marks):
+    marks = {u: m for u, m in marks.items() if m.get("brief") or m.get("comment")}
+    tmp = _marks_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(marks, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, _marks_path())
+
+
+BRIEF_NAME = {"": "", "yes": "есть", "no": "нет"}
 
 
 # ====================================================================== снимки
@@ -145,6 +225,11 @@ def diff(old, new):
             out.append(("ник", f"{uid}: {o['name']} → {e['name']}"))
         if o.get("rank") and e.get("rank") and o["rank"] != e["rank"]:
             out.append(("ранг", f"{nm(uid)}: {'повысили' if e['rank'] > o['rank'] else 'понизили'} {o['rank']} → {e['rank']}"))
+        if old.get("has_group") and new.get("has_group"):
+            if e.get("in_group") and not o.get("in_group"):
+                out.append(("в группу", f"{nm(uid)} вошёл в группу"))
+            elif o.get("in_group") and not e.get("in_group"):
+                out.append(("из группы", f"{nm(uid)} вышел из группы"))
         if old.get("has_calls") and new.get("has_calls") and on_now:
             if e.get("on_calls") and not o.get("on_calls"):
                 out.append(("катает", f"{nm(uid)} начал катать вызовы"))
@@ -162,7 +247,8 @@ def diff(old, new):
 
 GROUP_TITLE = [("зашёл", "Зашли"), ("вышел", "Вышли"), ("пропал", "Пропали"), ("статус", "Сменили статус"),
                ("ник", "Сменили ник"), ("ранг", "Ранг"), ("катает", "Начали катать вызовы"),
-               ("не катает", "Перестали катать вызовы")]
+               ("не катает", "Перестали катать вызовы"), ("в группу", "Вошли в группу"),
+               ("из группы", "Вышли из группы")]
 
 
 # ====================================================================== вывод
@@ -177,11 +263,19 @@ def sorted_emp(snap):
 
 
 def table_text(snap):
-    lines = ["№\tНик\tСтатик\tРанг\tСтатус\tВызовы"]
+    lines = ["№\tНик\tСтатик\tРанг\tСтатус\tВызовы\tГруппа\tБрифинг\tКомментарий"]
     for i, (uid, e) in enumerate(sorted_emp(snap), 1):
+        com = (e.get("comment") or "").replace("\t", " ").replace("\n", " ")
         lines.append(f"{e.get('num') or i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{status_text(e)}\t"
-                     f"{'катает' if e.get('on_calls') else ''}")
+                     f"{'катает' if e.get('on_calls') else ''}\t{group_text(snap, e)}\t"
+                     f"{BRIEF_NAME.get(e.get('brief') or '', '')}\t{com}")
     return "\n".join(lines)
+
+
+def group_text(snap, e):
+    if not snap.get("has_group"):
+        return ""
+    return "в группе" if e.get("in_group") else "нет"
 
 
 def changes_text(snap, old, old_label=""):
@@ -198,6 +292,9 @@ def changes_text(snap, old, old_label=""):
     if snap.get("outsiders"):
         parts.append(f"\nВ вызовах, но нет в списке PM ({len(snap['outsiders'])}):\n" +
                      "\n".join(f"• {v['name'] or '?'} ({u}) - вызовов: {v['n']}" for u, v in snap["outsiders"].items()))
+    if snap.get("group_outsiders"):
+        parts.append(f"\nВ группе, но нет в списке PM ({len(snap['group_outsiders'])}):\n" +
+                     "\n".join(f"• {n}" for n in snap["group_outsiders"]))
     if len(parts) == 1:
         parts.append("\nИзменений нет.")
     return "\n".join(parts)
