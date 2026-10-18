@@ -83,7 +83,8 @@ def merge(results, window_min=15):
         (k + 1) in by_num and by_num[k + 1]["status"] == "offline"
     employees = {}
     for uid, e in emp.items():
-        employees[uid] = {"num": e.get("num"), "name": e["name"], "rank": e["rank"], "status": e["status"],
+        employees[uid] = {"num": e.get("num"), "name": e["name"], "rank": e["rank"], "dept": e.get("dept") or "",
+                          "status": e["status"],
                           "offline_since": e.get("offline_since"), "on_calls": uid in on_calls,
                           "calls": on_calls.get(uid, {}).get("n", 0), "doubt": list(e["doubt"])}
     outsiders = {u: v for u, v in on_calls.items() if u not in employees}
@@ -170,6 +171,7 @@ BRIEF_NAME = {"": "", "yes": "есть", "no": "нет"}
 STATUS_ORDER = ("active", "away", "arena", "jail", "offline", "left")
 FILTER_DEFAULT = {"on": False, "status": list(STATUS_ORDER), "rank_min": "", "rank_max": "",
                   "calls": "all", "group": "all", "brief": "all", "comment": "all", "name": "", "off_hours": "",
+                  "depts": [],
                   "white_always": True, "white_only": False}
 
 
@@ -207,6 +209,8 @@ def passes(uid, e, f, white, now=None):
         return True
     st = e.get("status") or "unknown"
     if st in STATUS_ORDER and st not in f["status"]:
+        return False
+    if f["depts"] and (e.get("dept") or "") not in f["depts"]:     # пусто - все отделы
         return False
     lo, hi, r = _int(f["rank_min"]), _int(f["rank_max"]), e.get("rank")
     if (lo is not None or hi is not None) and r is None:
@@ -247,7 +251,7 @@ def filtered(snap, f, white):
 
 
 # ====================================================================== порядок списка между проверками
-ROSTER_KEYS = ("name", "rank", "status", "offline_since", "num")
+ROSTER_KEYS = ("name", "rank", "dept", "status", "offline_since", "num")
 
 
 def _roster_path():
@@ -372,6 +376,8 @@ def diff(old, new):
             out.append(("ник", f"{uid}: {o['name']} → {e['name']}"))
         if o.get("rank") and e.get("rank") and o["rank"] != e["rank"]:
             out.append(("ранг", f"{nm(uid)}: {'повысили' if e['rank'] > o['rank'] else 'понизили'} {o['rank']} → {e['rank']}"))
+        if o.get("dept") and e.get("dept") and o["dept"] != e["dept"] and not e.get("gone"):
+            out.append(("отдел", f"{nm(uid)}: {o['dept']} → {e['dept']}"))
         if old.get("has_group") and new.get("has_group"):
             if e.get("in_group") and not o.get("in_group"):
                 out.append(("в группу", f"{nm(uid)} вошёл в группу"))
@@ -393,7 +399,7 @@ def diff(old, new):
 
 
 GROUP_TITLE = [("зашёл", "Зашли"), ("вышел", "Вышли"), ("пропал", "Пропали"), ("статус", "Сменили статус"),
-               ("ник", "Сменили ник"), ("ранг", "Ранг"), ("катает", "Начали катать вызовы"),
+               ("ник", "Сменили ник"), ("ранг", "Ранг"), ("отдел", "Сменили отдел"), ("катает", "Начали катать вызовы"),
                ("не катает", "Перестали катать вызовы"), ("в группу", "Вошли в группу"),
                ("из группы", "Вышли из группы")]
 
@@ -411,10 +417,10 @@ def sorted_emp(snap):
 
 
 def table_text(snap):
-    lines = ["№\tНик\tСтатик\tРанг\tСтатус\tВызовы\tГруппа\tБрифинг\tКомментарий"]
+    lines = ["№\tНик\tСтатик\tРанг\tОтдел\tСтатус\tВызовы\tГруппа\tБрифинг\tКомментарий"]
     for i, (uid, e) in enumerate(sorted_emp(snap), 1):
         com = (e.get("comment") or "").replace("\t", " ").replace("\n", " ")
-        lines.append(f"{i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{status_text(e)}\t"
+        lines.append(f"{i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{e.get('dept') or ''}\t{status_text(e)}\t"
                      f"{'катает' if e.get('on_calls') else ''}\t{group_text(snap, e)}\t"
                      f"{BRIEF_NAME.get(e.get('brief') or '', '')}\t{com}")
     return "\n".join(lines)

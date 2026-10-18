@@ -119,10 +119,10 @@ def build_pm_tab(parent):
         pass
     nb.bind("<<NotebookTabChanged>>", lambda e: (cfg.update(tab=nb.index("current")), save_cfg(cfg)))
 
-    cols = ("num", "name", "uid", "rank", "status", "calls", "group", "brief", "comment")
+    cols = ("num", "name", "uid", "rank", "dept", "status", "calls", "group", "brief", "comment")
     et = ttk.Treeview(tabs["emp"], columns=cols, show="headings", selectmode="browse")
     for c, h, w, a in (("num", "№", 44, "e"), ("name", "Ник", 190, "w"), ("uid", "Статик", 76, "e"),
-                       ("rank", "Ранг", 50, "e"), ("status", "Статус", 180, "w"), ("calls", "Вызовы", 86, "w"),
+                       ("rank", "Ранг", 50, "e"), ("dept", "Отдел", 70, "center"), ("status", "Статус", 180, "w"), ("calls", "Вызовы", 86, "w"),
                        ("group", "Группа", 72, "center"), ("brief", "Брифинг", 76, "center"),
                        ("comment", "Комментарий", 200, "w")):
         et.heading(c, text=h)
@@ -405,6 +405,11 @@ def build_pm_tab(parent):
             STATE.update(n=0, online=0, calls=0, ask=0, changes=0)
             return
         snap = PT.merge(results, window())
+        seen = set(cfg.get("depts_seen", []))                          # отделы, которые видели - для фильтра
+        new_d = {e["dept"] for e in snap["employees"].values() if e.get("dept") and e["dept"] != "?"} - seen
+        if new_d:
+            cfg["depts_seen"] = sorted(seen | new_d)
+            save_cfg(cfg)
         PT.apply_roster(snap, st["base"])                              # порядок прошлой проверки, пропавшие - «Вышел»
         for uid, ed in st["edits"].items():                          # ручные правки поверх распознанного
             if uid in snap["employees"]:
@@ -439,7 +444,7 @@ def build_pm_tab(parent):
                 tags.append("calls")
             et.insert("", "end", iid=uid, tags=tags, values=(
                 i + 1, ("★ " if PT.in_white(uid, e, cfg["white"]) else "") + e["name"] + ("  ⚠" if e.get("doubt") else ""),
-                uid, e.get("rank") or "",
+                uid, e.get("rank") or "", e.get("dept") or "",
                 PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else "",
                 ("✓" if e.get("in_group") else "—") if snap.get("has_group") else "",
                 {"yes": "✓ есть", "no": "✗ нет"}.get(e.get("brief") or "", "·"), e.get("comment") or ""))
@@ -494,6 +499,7 @@ def build_pm_tab(parent):
         dlg.transient(parent.winfo_toplevel())
         dlg.grab_set()
         v_name, v_rank = tk.StringVar(value=emp["name"]), tk.StringVar(value=str(emp.get("rank") or ""))
+        v_dept = tk.StringVar(value=emp.get("dept") or "")
         names = [pm_ocr.STATUS_NAME[k] for k in ("active", "away", "arena", "jail", "offline")]
         v_st = tk.StringVar(value=pm_ocr.STATUS_NAME.get(emp["status"], names[0]))
         v_calls = tk.BooleanVar(value=bool(emp.get("on_calls")))
@@ -502,14 +508,19 @@ def build_pm_tab(parent):
         ttk.Label(dlg, text="Ник:").grid(row=1, column=0, sticky="w", **pad)
         ttk.Entry(dlg, textvariable=v_name, width=28).grid(row=1, column=1, **pad)
         ttk.Label(dlg, text="Ранг:").grid(row=2, column=0, sticky="w", **pad)
-        ttk.Entry(dlg, textvariable=v_rank, width=6).grid(row=2, column=1, sticky="w", **pad)
+        rf = ttk.Frame(dlg)
+        rf.grid(row=2, column=1, sticky="w", **pad)
+        ttk.Entry(rf, textvariable=v_rank, width=6).pack(side="left")
+        ttk.Label(rf, text="Отдел:").pack(side="left", padx=(12, 4))
+        ttk.Entry(rf, textvariable=v_dept, width=8).pack(side="left")
         ttk.Label(dlg, text="Статус:").grid(row=3, column=0, sticky="w", **pad)
         ttk.Combobox(dlg, textvariable=v_st, values=names, state="readonly", width=20).grid(row=3, column=1, sticky="w", **pad)
         ttk.Checkbutton(dlg, text="Катает вызовы", variable=v_calls).grid(row=4, column=1, sticky="w", **pad)
 
         def ok_():
             code = next(k for k, v in pm_ocr.STATUS_NAME.items() if v == v_st.get())
-            ed = {"name": v_name.get().strip(), "status": code, "on_calls": bool(v_calls.get())}
+            ed = {"name": v_name.get().strip(), "status": code, "on_calls": bool(v_calls.get()),
+                  "dept": v_dept.get().strip().upper()}
             if v_rank.get().strip().isdigit():
                 ed["rank"] = int(v_rank.get())
             st["edits"][uid] = ed
@@ -627,6 +638,16 @@ def build_pm_tab(parent):
             sv[k] = tk.BooleanVar(value=k in f["status"])
             ttk.Checkbutton(box, text=pm_ocr.STATUS_NAME[k], variable=sv[k]).grid(row=i // 3, column=i % 3, sticky="w",
                                                                               padx=(0, 14), pady=2)
+        ttk.Label(dlg, text="Отдел:").grid(row=12, column=0, sticky="nw", **pad)
+        dv = {}
+        dbox = ttk.Frame(dlg)
+        dbox.grid(row=12, column=1, columnspan=3, sticky="w", **pad)
+        depts = sorted(set(cfg.get("depts_seen", [])) | set(f["depts"]))
+        for i, d_ in enumerate(depts):
+            dv[d_] = tk.BooleanVar(value=d_ in f["depts"])
+            ttk.Checkbutton(dbox, text=d_, variable=dv[d_]).grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 14), pady=2)
+        ttk.Label(dbox, text="ничего не отмечено - все отделы" if depts else "отделы появятся после скринов «Коллеги»",
+                  style="Muted.TLabel").grid(row=(len(depts) + 3) // 4, column=0, columnspan=4, sticky="w")
         ttk.Label(dlg, text="Ранг:").grid(row=2, column=0, sticky="w", **pad)
         rk = ttk.Frame(dlg)
         rk.grid(row=2, column=1, columnspan=3, sticky="w", **pad)
@@ -661,7 +682,8 @@ def build_pm_tab(parent):
         def apply_(*a):
             f.update(status=[k for k in PT.STATUS_ORDER if sv[k].get()], rank_min=v_lo.get().strip(),
                      rank_max=v_hi.get().strip(), name=v_name.get(), off_hours=v_off.get().strip(),
-                     white_always=bool(v_wa.get()), white_only=bool(v_wo.get()))
+                     white_always=bool(v_wa.get()), white_only=bool(v_wo.get()),
+                     depts=[d_ for d_, v_ in dv.items() if v_.get()])
             for k in CHOICES:
                 f[k] = next(c for c, n in CHOICES[k] if n == cv[k].get())
             if not f["on"]:                                          # меняют фильтр - значит, он нужен
@@ -676,10 +698,10 @@ def build_pm_tab(parent):
             dlg.destroy()
             refill()
             filter_dialog()
-        for v in list(sv.values()) + list(cv.values()) + [v_lo, v_hi, v_name, v_off, v_wa, v_wo]:
+        for v in list(sv.values()) + list(cv.values()) + list(dv.values()) + [v_lo, v_hi, v_name, v_off, v_wa, v_wo]:
             v.trace_add("write", apply_)
         bt = ttk.Frame(dlg)
-        bt.grid(row=11, column=0, columnspan=4, sticky="ew", padx=12, pady=(8, 12))
+        bt.grid(row=13, column=0, columnspan=4, sticky="ew", padx=12, pady=(8, 12))
         ttk.Button(bt, text="Сбросить", command=reset).pack(side="left")
         ttk.Button(bt, text="Готово", style="Accent.TButton", command=dlg.destroy).pack(side="right")
         try:

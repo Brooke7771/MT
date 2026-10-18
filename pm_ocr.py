@@ -21,7 +21,7 @@ LAYOUT = {
         "cols": {"num_name": (376, 594, "en"), "uid": (594, 668, "en"),
                  "post": (680, 890, "en"), "rank_dept": (898, 1075, "en"), "today": (1088, 1234, "ru"),
                  "month": (1238, 1370, "ru"), "status": (1376, 1518, "ru")},
-        "dot": (1521, 1538), "ref": "uid",
+        "dot": (1521, 1538), "ref": "uid", "dept": (985, 1075),
     },
     "calls": {
         "anchors": (("сотрудник", 388), ("описание", 1289)), "header_y": 276, "row_h": 45,
@@ -284,7 +284,7 @@ def recognize(path_or_img):
         for t, x, y, w, h in cols["uid"]:
             pad = 2 * a
             digits.learn(img.crop((int(x - pad), int(y - pad), int(x + w + pad), int(y + h + pad))), _digits(t))
-    rows = []
+    rows, cys = [], []
     for cy, g in groups:
         top, bot = min(x[2] for x in g), max(x[2] + x[4] for x in g)
         if bot - top < hmed * 0.72 or top < y0 + 1 or bot > y1 - 1:
@@ -295,9 +295,76 @@ def recognize(path_or_img):
             return " ".join(x[0] for x in ws).strip()
         if kind == "colleagues":
             rows.append(_colleague(img, L, X, cy, rh, cell, digits))
+            cys.append(cy)
         else:
             rows.append(_call(cell))
+    if kind == "colleagues" and rows:
+        for row, d in zip(rows, _depts(img, X(L["dept"][0]), X(L["dept"][1]), cys, rh, a)):
+            row["dept"] = d
     return {"kind": kind, "rows": rows, "error": ""}
+
+
+# ---- отдел: короткое слово («PM») OCR Windows читает ненадёжно - только на одном масштабе из нескольких.
+# Поэтому ячейки отдела группируем по картинке (шрифт один, отделов немного), каждую группу выкладываем
+# сеткой (OCR не берёт картинки больше 2600 px) и читаем на нескольких масштабах, пока не прочтётся.
+LATIN = str.maketrans("АВЕКМНОРСТХУавекмнорстху", "ABEKMHOPCTXYABEKMHOPCTXY")
+DEPT_SCALES = (1.5, 1.3, 1.7, 1.2, 2.0, 1.0)
+
+
+def _depts(img, xa, xb, cys, rh, a):
+    import numpy as np
+    cells, vecs = [], []
+    for cy in cys:
+        c = img.crop((int(xa), int(cy - rh * 0.35), int(xb), int(cy + rh * 0.35)))
+        g = np.asarray(c.convert("L"), dtype=np.float32)
+        ink = g < 140
+        if ink.sum() < 6:
+            cells.append(None)
+            vecs.append(None)
+            continue
+        ys, xs = np.where(ink)
+        t = Image.fromarray((ink[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255).astype(np.uint8))
+        cells.append(c)
+        vecs.append((np.asarray(t.resize((48, 14), Image.BILINEAR), dtype=np.float32) / 255, t.width / max(1, t.height)))
+    groups = []                                                 # [[индексы], образец]
+    for i, v in enumerate(vecs):
+        if v is None:
+            continue
+        for gr in groups:
+            ref = vecs[gr[0]]
+            if abs(ref[1] - v[1]) < 0.25 * ref[1] and float(np.mean((ref[0] - v[0]) ** 2)) < 0.02:
+                gr.append(i)
+                break
+        else:
+            groups.append([i])
+    out = [""] * len(cys)
+    for gr in groups:
+        text = _dept_text([cells[i] for i in gr[:15]], a)
+        for i in gr:
+            out[i] = text
+    return out
+
+
+def _dept_text(cells, a, per=5):
+    from collections import Counter
+    cw, ch = cells[0].size
+    for sc in DEPT_SCALES:
+        up = sc / a
+        w, h = max(1, int(cw * up)), max(1, int(ch * up))
+        gx, gy = 40, 20
+        n = len(cells)
+        sheet = Image.new("RGB", (min(n, per) * (w + gx) + gx, ((n + per - 1) // per) * (h + gy) + gy), (255, 255, 255))
+        for i, c in enumerate(cells):
+            sheet.paste(c.resize((w, h), Image.LANCZOS), (gx + (i % per) * (w + gx), gy + (i // per) * (h + gy)))
+        for lang in ("en", "ru"):
+            got = Counter()
+            for t, x, y, ww, hh in ocr(sheet, lang):
+                t = re.sub(r"[^A-Za-zА-Яа-я0-9]", "", t.translate(LATIN)).upper()
+                if t:
+                    got[t] += 1
+            if got:
+                return got.most_common(1)[0][0]
+    return "?"
 
 
 # ---- группа в игровом телефоне: карточки «Имя» (жирно, чёрным) и «Фамилия» (серым) под ним, справа метки отделов.
@@ -374,7 +441,9 @@ def _colleague(img, L, X, cy, rh, cell, digits):
     name = _clean_name(name)
     uid = _digits(cell("uid"))
     rd = cell("rank_dept").split()
-    rank = _digits(rd[0]) if rd else ""
+    # первое слово - ранг, только если похоже на число: одиночную цифру OCR не видит, и тогда первым идёт
+    # отдел («SURG» иначе стал бы рангом 5, «MED» - 0)
+    rank = _digits(rd[0]) if rd and re.fullmatch(r"[0-9Il|!]{1,2}", rd[0]) else ""
     rank = rank[:2]
     if not rank:                                                # одиночная цифра - по образцам
         r_, conf = digits.read(img.crop((int(X(900)), int(cy - rh * 0.3), int(X(966)), int(cy + rh * 0.3))))
