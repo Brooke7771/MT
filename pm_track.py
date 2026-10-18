@@ -166,6 +166,72 @@ def save_marks(marks):
 BRIEF_NAME = {"": "", "yes": "есть", "no": "нет"}
 
 
+# ====================================================================== порядок списка между проверками
+ROSTER_KEYS = ("name", "rank", "status", "offline_since", "num")
+
+
+def _roster_path():
+    return os.path.join(data_dir(), "pm_roster.json")
+
+
+def load_roster():
+    """{"order": [статики по порядку], "emp": {статик: последние данные}} - порядок первой проверки + кто добавился."""
+    try:
+        with open(_roster_path(), encoding="utf-8") as f:
+            r = json.load(f)
+        if isinstance(r.get("order"), list) and isinstance(r.get("emp"), dict):
+            return r
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"order": [], "emp": {}}
+
+
+def save_roster(r):
+    tmp = _roster_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(r, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, _roster_path())
+
+
+def reset_roster():
+    try:
+        os.remove(_roster_path())
+    except OSError:
+        pass
+
+
+def apply_roster(snap, base):
+    """Порядок строк как в прошлой проверке (base). Кого нет на скринах - «Вышел» (кто и так был не в сети -
+    остаётся как был); новые - ниже, по номеру в игре. Без скринов «Коллеги» ничего не трогаем."""
+    emp = snap["employees"]
+    snap["roster_new"], snap["roster_gone"] = [], []
+    if not emp:
+        return
+    order = [u for u in base.get("order", []) if u in emp or u in base.get("emp", {})]
+    known = set(order)
+    new = [u for u, e in sorted(emp.items(), key=lambda kv: (kv[1].get("num") or 9999, kv[1]["name"])) if u not in known]
+    for u in order:
+        if u in emp:
+            continue
+        o = base["emp"][u]
+        e = {k: o.get(k) for k in ROSTER_KEYS}
+        e.update(on_calls=False, calls=0, doubt=[], in_group=False, gone=True)
+        if e["status"] in ONLINE or not e["status"]:
+            e["status"], e["offline_since"] = "left", None
+            snap["roster_gone"].append(u)
+        emp[u] = e
+    if order:
+        snap["roster_new"] = new
+    for i, u in enumerate(order + new):
+        emp[u]["order"] = i
+
+
+def roster_of(snap):
+    order = [u for u, _ in sorted_emp(snap)]
+    return {"order": order, "emp": {u: {k: snap["employees"][u].get(k) for k in ROSTER_KEYS} for u in order},
+            "updated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")}
+
+
 # ====================================================================== снимки
 def save(snap):
     os.makedirs(snap_dir(), exist_ok=True)
@@ -218,7 +284,8 @@ def diff(old, new):
                 out.append(("зашёл", f"{nm(uid)} - {STATUS_NAME.get(e['status'], e['status'])}"))
             continue
         if o["status"] in ONLINE and not on_now:
-            out.append(("вышел", f"{nm(uid)}" + (f" - не в сети с {e['offline_since']}" if e.get("offline_since") else "")))
+            out.append(("вышел", f"{nm(uid)}" + (f" - не в сети с {e['offline_since']}" if e.get("offline_since") else
+                                                 " - нет на скринах" if e["status"] == "left" else "")))
         elif o["status"] != e["status"] and on_now:
             out.append(("статус", f"{nm(uid)}: {STATUS_NAME.get(o['status'])} → {STATUS_NAME.get(e['status'])}"))
         if o.get("name") and e.get("name") and o["name"] != e["name"]:
@@ -259,14 +326,15 @@ def status_text(e):
 
 
 def sorted_emp(snap):
-    return sorted(snap["employees"].items(), key=lambda kv: (kv[1].get("num") or 9999, kv[1]["name"]))
+    return sorted(snap["employees"].items(), key=lambda kv: (kv[1].get("order", 0), kv[1].get("num") or 9999,
+                                                             kv[1]["name"]))
 
 
 def table_text(snap):
     lines = ["№\tНик\tСтатик\tРанг\tСтатус\tВызовы\tГруппа\tБрифинг\tКомментарий"]
     for i, (uid, e) in enumerate(sorted_emp(snap), 1):
         com = (e.get("comment") or "").replace("\t", " ").replace("\n", " ")
-        lines.append(f"{e.get('num') or i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{status_text(e)}\t"
+        lines.append(f"{i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{status_text(e)}\t"
                      f"{'катает' if e.get('on_calls') else ''}\t{group_text(snap, e)}\t"
                      f"{BRIEF_NAME.get(e.get('brief') or '', '')}\t{com}")
     return "\n".join(lines)

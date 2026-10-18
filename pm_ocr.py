@@ -32,7 +32,7 @@ LAYOUT = {
     },
 }
 STATUS_NAME = {"active": "Сейчас активен", "away": "Нет на месте", "arena": "На арене", "jail": "В тюрьме", "offline": "Не в сети",
-               "unknown": "?"}
+               "left": "Вышел", "unknown": "?"}
 ONLINE = {"active", "away", "arena", "jail"}           # в игре (для «зашёл/вышел»)
 ASK = {"active", "away"}                               # кому писать /f, если не катает вызовы
 DATE_RE = re.compile(r"(\d{1,2})[.,](\d{1,2})[.,](\d{2}|\d{4})\s*([01]?\d|2[0-3])[:.;]([0-5]\d)")

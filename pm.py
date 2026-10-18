@@ -13,6 +13,7 @@ import pm_ocr
 import pm_track as PT
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp")
+NEW_ROUND = 5 * 60          # скрин «Коллеги» позже прошлых на столько секунд - новая проверка
 STATE = {"n": 0, "online": 0, "calls": 0, "ask": 0, "changes": 0, "busy": "", "shots": 0, "ok": True}
 
 
@@ -46,7 +47,8 @@ def build_pm_tab(parent):
     q = queue.Queue()
     work = queue.Queue()
     st = {"alive": True, "shots": [], "snap": None, "old": None, "old_label": "", "watch_seen": set(),
-          "watch_t": 0.0, "edits": {}, "marks": PT.load_marks()}
+          "watch_t": 0.0, "edits": {}, "marks": PT.load_marks(), "base": PT.load_roster()}
+    st["roster"] = st["base"]
     ok, ocr_msg = pm_ocr.available()
     STATE["ok"] = ok
 
@@ -56,6 +58,7 @@ def build_pm_tab(parent):
     ttk.Button(bar, text="Добавить скрины…", style="Accent.TButton", command=lambda: add_files()).pack(side="left")
     ttk.Button(bar, text="Вставить из буфера (Ctrl+V)", command=lambda: paste()).pack(side="left", padx=4)
     ttk.Button(bar, text="Очистить", command=lambda: clear()).pack(side="left", padx=4)
+    ttk.Button(bar, text="Новый порядок", command=lambda: new_order()).pack(side="left", padx=4)
     watch_var = tk.BooleanVar(value=bool(cfg.get("watch_on")))
     folder = {"path": cfg.get("watch_dir", "")}
     ttk.Checkbutton(bar, text="Следить за папкой:", variable=watch_var, command=lambda: watch_toggle()).pack(
@@ -102,6 +105,7 @@ def build_pm_tab(parent):
     et.tag_configure("doubt", foreground="#ffb347")
     et.tag_configure("off", foreground=T.MUTED)
     et.tag_configure("calls", foreground=T.OK)
+    et.tag_configure("left", foreground="#e06c6c")
 
     ct = ttk.Treeview(tabs["calls"], columns=("emp", "uid", "cit", "reason", "status", "date"), show="headings")
     for c, h, w, a in (("emp", "Сотрудник", 200, "w"), ("uid", "UID", 80, "e"), ("cit", "Гражданин", 90, "e"),
@@ -143,7 +147,7 @@ def build_pm_tab(parent):
         for p in paths:
             if not p.lower().endswith(IMG_EXT) or any(s["path"] == p for s in st["shots"]):
                 continue
-            s = {"path": p, "name": os.path.basename(p), "res": None, "state": "в очереди"}
+            s = {"path": p, "name": os.path.basename(p), "res": None, "state": "в очереди", "t": time.time()}
             st["shots"].append(s)
             work.put(s)
         shots_refresh()
@@ -177,8 +181,28 @@ def build_pm_tab(parent):
     def clear():
         st["shots"].clear()
         st["edits"].clear()
+        st["base"] = st["roster"]                                      # следующая проверка - в том же порядке
         shots_refresh()
         rebuild()
+
+    def new_order():
+        if not st["roster"].get("order"):
+            return
+        if messagebox.askyesno("Порядок списка", "Забыть порядок прошлых проверок? Таблица выстроится заново "
+                               "по текущим скринам, «Вышел» у пропавших исчезнет.", parent=parent):
+            PT.reset_roster()
+            st["base"] = st["roster"] = {"order": [], "emp": {}}
+            rebuild()
+
+    def new_round(s):
+        """Пришёл скрин «Коллеги» через NEW_ROUND после прошлых - это новая проверка: старые скрины убираем
+        (порядок строк остаётся от прошлой)."""
+        prev = [x for x in st["shots"] if x is not s and x["res"] and x["res"].get("kind") == "colleagues"]
+        if s["res"].get("kind") != "colleagues" or not prev or s["t"] - max(x["t"] for x in prev) < NEW_ROUND:
+            return
+        st["shots"][:] = [x for x in st["shots"] if x["t"] > s["t"] - NEW_ROUND]
+        st["edits"].clear()
+        st["base"] = st["roster"]
 
     def remove_shot():
         s = lb.curselection()
@@ -288,10 +312,17 @@ def build_pm_tab(parent):
             STATE.update(n=0, online=0, calls=0, ask=0, changes=0)
             return
         snap = PT.merge(results, window())
+        PT.apply_roster(snap, st["base"])                              # порядок прошлой проверки, пропавшие - «Вышел»
         for uid, ed in st["edits"].items():                          # ручные правки поверх распознанного
             if uid in snap["employees"]:
                 snap["employees"][uid].update(ed)
                 snap["employees"][uid]["doubt"] = []
+        if snap["employees"]:
+            st["roster"] = PT.roster_of(snap)
+            try:
+                PT.save_roster(st["roster"])
+            except OSError as ex:
+                msg.set(f"Порядок не сохранился: {ex}")
         apply_marks(snap)
         st["snap"] = snap
         fill(snap)
@@ -303,12 +334,14 @@ def build_pm_tab(parent):
             tags = ["odd"] if i % 2 else []
             if e.get("doubt"):
                 tags.append("doubt")
+            elif e["status"] == "left":
+                tags.append("left")
             elif e["status"] == "offline":
                 tags.append("off")
             elif e.get("on_calls"):
                 tags.append("calls")
             et.insert("", "end", iid=uid, tags=tags, values=(
-                e.get("num") or "", e["name"] + ("  ⚠" if e.get("doubt") else ""), uid, e.get("rank") or "",
+                i + 1, e["name"] + ("  ⚠" if e.get("doubt") else ""), uid, e.get("rank") or "",
                 PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else "",
                 ("✓" if e.get("in_group") else "—") if snap.get("has_group") else "",
                 {"yes": "✓ есть", "no": "✗ нет"}.get(e.get("brief") or "", "·"), e.get("comment") or ""))
@@ -339,6 +372,10 @@ def build_pm_tab(parent):
             n_in = sum(1 for e in emps if e.get("in_group"))
             info.append(f"в группе: {len(snap['group'])}" + (f" из {snap['group_count']}" if snap.get("group_count") else "")
                         + f", из них в списке PM: {n_in}")
+        if snap.get("roster_gone"):
+            info.append(f"вышли (нет на скринах): {len(snap['roster_gone'])}")
+        if snap.get("roster_new"):
+            info.append(f"новых внизу: {len(snap['roster_new'])}")
         if snap["unknown"]:
             info.append(f"строк без статика: {len(snap['unknown'])}")
         if any(e.get("doubt") for e in emps):
@@ -512,6 +549,8 @@ def build_pm_tab(parent):
                     msg.set(m[1])
                 elif m[0] == "done":
                     STATE["busy"] = ""
+                    if m[1] in st["shots"]:
+                        new_round(m[1])
                     shots_refresh()
                     rebuild()
         except queue.Empty:
