@@ -803,5 +803,65 @@ class WoodHero(Hero):
                           (d.get("life") or {}).get("count"))
 
 
+class MineHero(Hero):
+    H = 150
+    X0, Y0, X1, Y1 = 600, 240, 1400, 720                # коврик мини-игры (1080p)
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        act, state = bool(d.get("active")), d.get("state")
+        view = d.get("view") or {}
+        # --- коврик с камнем и куски руды, которые видит бот
+        rw = 214
+        self.card(0, rw, fill="#16101a", outline="#3a2540")
+        bw = rw - 28
+        bh = bw * (self.Y1 - self.Y0) / (self.X1 - self.X0)
+        ox, oy = 14, (H - bh) / 2
+        k = bw / (self.X1 - self.X0)
+        _rrect(self, ox, oy, ox + bw, oy + bh, 6, fill="#8a5a78" if state == "mini" else "#2a1d2c", outline="#5b3a55")
+        if state == "mini":
+            for (x, y) in view.get("ores", []):
+                px, py = ox + (x - self.X0) * k, oy + (y - self.Y0) * k
+                self.create_oval(px - 4, py - 4, px + 4, py + 4, fill="#ffcc66", outline="#2a1d2c")
+            for (x, y) in view.get("skip", []):
+                px, py = ox + (x - self.X0) * k, oy + (y - self.Y0) * k
+                self.create_line(px - 4, py - 4, px + 4, py + 4, fill=T.MUTED, width=2)
+                self.create_line(px - 4, py + 4, px + 4, py - 4, fill=T.MUTED, width=2)
+            tg = view.get("t")
+            if tg:
+                px, py = ox + (tg[0] - self.X0) * k, oy + (tg[1] - self.Y0) * k
+                r = 6 + 3 * abs((t * 4) % 2 - 1)
+                self.create_oval(px - r, py - r, px + r, py + r, outline="#ff4d6d", width=2)
+        elif state == "dig":
+            ph = (t * float(d.get("cps") or 6)) % 1.0           # удары кирки
+            cx, cy = rw / 2, H / 2
+            self.create_oval(cx - 30, cy - 4, cx + 30, cy + 34, fill="#3b3f52", outline="")
+            self.create_line(cx + 6, cy - 30 + 14 * ph, cx + 34, cy - 4 + 14 * ph, fill="#c9c9d1", width=4)
+            self.text(cx, H - 18, "добываю…", 9, True, T.TEXT, "center")
+        else:
+            self.text(rw / 2, H / 2, "жду камень" if act else "выключено", 9, True, T.MUTED, "center")
+        # --- состояние
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Шахта")
+        self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        cells = [("Руды на камне", str(d.get("left") or 0) if state == "mini" else "—"),
+                 ("Кликов в секунду", f"{float(d.get('cps') or 0):g}"), ("В час", f"{self.rate}"),
+                 ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, "Камней", [("Руды", str(self.shown("Руды"))), ("В час", f"{self.rate}")],
+                          (d.get("life") or {}).get("count"))
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
-          "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero}
+          "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero,
+          "mine": MineHero}

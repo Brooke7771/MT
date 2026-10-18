@@ -28,8 +28,8 @@ MASTER_KEYS = []
 
 OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
 FREE = {"ram", "cook", "market", "pm"}           # всегда доступно без ключа
-LOCKED = ["bot", "afk", "fish", "wood", "test"]  # под ключом ("test" - страница с ботами на проверке)
-ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "test": "Тест (боты на проверке)",
+LOCKED = ["bot", "afk", "fish", "wood", "mine", "test"]  # под ключом ("test" - страница с ботами на проверке)
+ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "test": "Тест (боты на проверке)",
                 "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок", "pm": "PM (таблица по скринам)"}
 
 
@@ -102,7 +102,8 @@ def clear_key():
 _hooks = []
 _wipe = {"pending": False}
 BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png",
-             "stats.json", "sanding_config.json", "clicker_config.json", "woodcut_config.json")
+             "stats.json", "sanding_config.json", "clicker_config.json", "woodcut_config.json",
+             "mining_config.json")
 BOT_DIRS = ("antiafk_templates",)
 BOT_GLOBS = ("debug_fishing_*",)
 
