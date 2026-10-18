@@ -374,6 +374,7 @@ def main():
         failed(pages["pm"], "PM", ex)
     try:
         import recorder
+        recorder.ALLOWED["fn"] = L.has_master
         stops.append(recorder.build_rec_tab(pages["rec"]))
     except Exception as ex:
         failed(pages["rec"], "Запись", ex)

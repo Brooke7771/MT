@@ -293,8 +293,17 @@ class Session:
 CONFIG_PATH = os.path.join(data_dir(), "recorder_config.json")
 
 
+ALLOWED = {"fn": lambda: True}       # главное окно подставляет «есть мастер-ключ»: без него страницы нет и клавиши молчат
+
+
+def rec_on():
+    import switches
+    return switches.is_on("rec") and ALLOWED["fn"]()
+
+
 def build_rec_tab(parent):
     import tkinter as tk
+    import switches
     from tkinter import ttk, messagebox
     import theme as T
     import widgets
@@ -443,6 +452,9 @@ def build_rec_tab(parent):
         save_cfg()
 
     def start():
+        if not rec_on():
+            status_var.set("Запись выключена в меню (переключатель у пункта «Запись»)")
+            return
         apply_cfg()
         try:
             from version import __version__
@@ -515,7 +527,7 @@ def build_rec_tab(parent):
     def hotkeys():
         prev = {"s": True, "m": True}
         while st["alive"]:
-            if st["binding"] is None:
+            if st["binding"] is None and rec_on():
                 s = key_down(cfg["start_vk"])
                 m = key_down(cfg["mark_vk"])
                 if s and not prev["s"]:
@@ -525,6 +537,7 @@ def build_rec_tab(parent):
                 prev["s"], prev["m"] = s, m
             time.sleep(0.03)
     threading.Thread(target=hotkeys, daemon=True).start()
+    switches.listen(lambda k, v: q.put(("off",)) if k == "rec" and not v else None)
 
     def pump():
         try:
@@ -532,6 +545,8 @@ def build_rec_tab(parent):
                 m = q.get_nowait()
                 if m[0] == "toggle":
                     toggle()
+                elif m[0] == "off" and st["sess"]:
+                    stop("выключена в меню")
                 elif m[0] == "mark" and st["sess"]:
                     n = st["sess"].mark()
                     status_var.set(f"● Метка {n} · {st['sess'].elapsed():.1f} с")
