@@ -14,6 +14,10 @@ import pm_track as PT
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp")
 NEW_ROUND = 5 * 60          # скрин «Коллеги» позже прошлых на столько секунд - новая проверка
+# клавиши для скрина игры (виртуальные коды Windows); игра их не занимает
+SHOT_KEYS = {0: "выкл", 0x6A: "Numpad *", 0x6F: "Numpad /", 0x6E: "Numpad .", 0x2D: "Insert", 0x24: "Home",
+             0x23: "End", 0x21: "PageUp", 0x22: "PageDown", 0x13: "Pause", 0x91: "ScrollLock"}
+SHOT_KEYS.update({0x70 + i: f"F{i + 1}" for i in range(12)})
 STATE = {"n": 0, "online": 0, "calls": 0, "ask": 0, "changes": 0, "busy": "", "shots": 0, "ok": True}
 
 
@@ -44,6 +48,10 @@ def build_pm_tab(parent):
     import widgets
 
     cfg = load_cfg()
+    cfg["filter"] = PT.filter_cfg(cfg.get("filter"))
+    cfg.setdefault("white", [])
+    cfg.setdefault("shot_vk", 0x6A)
+    cfg.setdefault("shot_beep", True)
     q = queue.Queue()
     work = queue.Queue()
     st = {"alive": True, "shots": [], "snap": None, "old": None, "old_label": "", "watch_seen": set(),
@@ -63,9 +71,26 @@ def build_pm_tab(parent):
     folder = {"path": cfg.get("watch_dir", "")}
     ttk.Checkbutton(bar, text="Следить за папкой:", variable=watch_var, command=lambda: watch_toggle()).pack(
         side="left", padx=(16, 4))
-    folder_lbl = ttk.Label(bar, text=folder["path"] or "не выбрана", style="Muted.TLabel")
+    def short(d):                                                   # длинный путь не должен выталкивать кнопки
+        return d if len(d) <= 40 else "…" + d[-38:]
+    folder_lbl = ttk.Label(bar, text=short(folder["path"]) or "не выбрана", style="Muted.TLabel")
     folder_lbl.pack(side="left")
     ttk.Button(bar, text="Выбрать…", command=lambda: pick_folder()).pack(side="left", padx=4)
+    bar2 = ttk.Frame(parent)
+    bar2.pack(fill="x", padx=8, pady=(0, 4))
+    ttk.Label(bar2, text="Скрин игры по клавише:").pack(side="left")
+    key_var = tk.StringVar(value=SHOT_KEYS.get(cfg["shot_vk"], "Numpad *"))
+    key_cb = ttk.Combobox(bar2, textvariable=key_var, values=list(SHOT_KEYS.values()), state="readonly", width=10)
+    key_cb.pack(side="left", padx=4)
+    ttk.Button(bar2, text="Скрин через 3 с", command=lambda: shot_later()).pack(side="left", padx=4)
+    beep_var = tk.BooleanVar(value=bool(cfg["shot_beep"]))
+    ttk.Checkbutton(bar2, text="Звук", variable=beep_var,
+                    command=lambda: (cfg.update(shot_beep=bool(beep_var.get())), save_cfg(cfg))).pack(side="left", padx=(8, 0))
+    filter_var = tk.BooleanVar(value=bool(cfg["filter"]["on"]))
+    ttk.Checkbutton(bar2, text="Фильтр", variable=filter_var, command=lambda: filter_toggle()).pack(side="left", padx=(24, 4))
+    ttk.Button(bar2, text="Настроить фильтр…", command=lambda: filter_dialog()).pack(side="left", padx=4)
+    white_btn = ttk.Button(bar2, text="Вайтлист…", command=lambda: white_dialog())
+    white_btn.pack(side="left", padx=4)
     msg = tk.StringVar(value=("Добавь скрины «Коллеги», «Вызовы» (История) и группы в телефоне. Можно несколько: они склеятся."
                               if ok else "⚠ " + ocr_msg))
     ttk.Label(parent, textvariable=msg, style="Muted.TLabel" if ok else "Warn.TLabel").pack(anchor="w", padx=10)
@@ -88,6 +113,11 @@ def build_pm_tab(parent):
         f = ttk.Frame(nb)
         nb.add(f, text=t_)
         tabs[k_] = f
+    try:
+        nb.select(int(cfg.get("tab", 0)))
+    except (tk.TclError, ValueError):
+        pass
+    nb.bind("<<NotebookTabChanged>>", lambda e: (cfg.update(tab=nb.index("current")), save_cfg(cfg)))
 
     cols = ("num", "name", "uid", "rank", "status", "calls", "group", "brief", "comment")
     et = ttk.Treeview(tabs["emp"], columns=cols, show="headings", selectmode="browse")
@@ -131,7 +161,7 @@ def build_pm_tab(parent):
     ttk.Label(bot, text="Катает - вызов за последние").pack(side="left")
     ttk.Entry(bot, textvariable=win_var, width=4).pack(side="left", padx=4)
     ttk.Label(bot, text="мин. (0 - все на скринах)").pack(side="left")
-    for text, cmd in (("Копировать таблицу", lambda: copy(PT.table_text(st["snap"]) if st["snap"] else "")),
+    for text, cmd in (("Копировать таблицу", lambda: copy(PT.table_text(view(st["snap"])) if st["snap"] else "")),
                       ("Копировать изменения", lambda: copy(diff_txt.get("1.0", "end").strip())),
                       ("Копировать /f", lambda: copy(f_txt.get("1.0", "end").strip()))):
         ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(10, 0))
@@ -233,7 +263,7 @@ def build_pm_tab(parent):
         d = filedialog.askdirectory(parent=parent, title="Папка, куда сохраняются скрины", initialdir=folder["path"] or None)
         if d:
             folder["path"] = d
-            folder_lbl.configure(text=d)
+            folder_lbl.configure(text=short(d))
             cfg["watch_dir"] = d
             save_cfg(cfg)
             if watch_var.get():
@@ -293,6 +323,69 @@ def build_pm_tab(parent):
             q.put(("done", s))
     if ok:
         threading.Thread(target=worker, daemon=True).start()
+    if watch_var.get() and folder["path"]:                          # при запуске старые файлы папки не берём
+        st["watch_seen"] = set(_list_imgs(folder["path"]))
+
+    # ================================================================ скрин игры по клавише
+    st["shot_vk"] = cfg["shot_vk"]
+
+    def shot_dir():
+        if not folder["path"]:                                       # папки нет - своя в «Изображениях», за ней и следим
+            folder["path"] = os.path.join(os.path.expanduser("~"), "Pictures", "Majestic PM")
+            cfg["watch_dir"] = folder["path"]
+            save_cfg(cfg)
+            q.put(("folder", folder["path"]))
+        os.makedirs(folder["path"], exist_ok=True)
+        return folder["path"]
+
+    def take_shot():
+        """Снимок основного экрана (игра на весь экран) в папку скринов. Вызывается в фоновом потоке."""
+        try:
+            import mss
+            from PIL import Image
+            try:
+                import ctypes
+                ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+            except Exception:
+                pass
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[1])
+            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            p = os.path.join(shot_dir(), time.strftime("PM_%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}.png")
+            img.save(p)
+            if cfg.get("shot_beep"):
+                try:
+                    import winsound
+                    winsound.MessageBeep(0)
+                except Exception:
+                    pass
+            q.put(("shot", p))
+        except Exception as ex:
+            q.put(("busy", f"Скрин не сохранился: {ex}"))
+
+    def hot_worker():
+        import ctypes
+        user32 = ctypes.windll.user32
+        was = False
+        while st["alive"]:
+            vk = st["shot_vk"]
+            down = bool(vk) and bool(user32.GetAsyncKeyState(vk) & 0x8000)
+            if down and not was:
+                take_shot()
+            was = down
+            time.sleep(0.03)
+    threading.Thread(target=hot_worker, daemon=True).start()
+
+    def shot_later():
+        msg.set("Скрин через 3 секунды: переключись в игру")
+        parent.after(3000, lambda: threading.Thread(target=take_shot, daemon=True).start())
+
+    def key_pick(e=None):
+        vk = next((k for k, v in SHOT_KEYS.items() if v == key_var.get()), 0)
+        st["shot_vk"] = cfg["shot_vk"] = vk
+        save_cfg(cfg)
+        msg.set(f"Скрин игры: клавиша {key_var.get()}" if vk else "Скрин по клавише выключен")
+    key_cb.bind("<<ComboboxSelected>>", key_pick)
 
     # ================================================================ результат
     def window():
@@ -327,7 +420,11 @@ def build_pm_tab(parent):
         st["snap"] = snap
         fill(snap)
 
-    def fill(snap):
+    def view(s):
+        return PT.filtered(s, cfg["filter"], cfg["white"])
+
+    def fill(full):
+        snap, old = view(full), view(st["old"])
         sel = et.selection()
         et.delete(*et.get_children())
         for i, (uid, e) in enumerate(PT.sorted_emp(snap)):
@@ -341,7 +438,8 @@ def build_pm_tab(parent):
             elif e.get("on_calls"):
                 tags.append("calls")
             et.insert("", "end", iid=uid, tags=tags, values=(
-                i + 1, e["name"] + ("  ⚠" if e.get("doubt") else ""), uid, e.get("rank") or "",
+                i + 1, ("★ " if PT.in_white(uid, e, cfg["white"]) else "") + e["name"] + ("  ⚠" if e.get("doubt") else ""),
+                uid, e.get("rank") or "",
                 PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else "",
                 ("✓" if e.get("in_group") else "—") if snap.get("has_group") else "",
                 {"yes": "✓ есть", "no": "✗ нет"}.get(e.get("brief") or "", "·"), e.get("comment") or ""))
@@ -350,20 +448,22 @@ def build_pm_tab(parent):
         ct.delete(*ct.get_children())
         for i, c in enumerate(snap["calls"]):
             tags = ["odd"] if i % 2 else []
-            if c["uid"] and c["uid"] in snap["employees"]:
+            if c["uid"] and c["uid"] in full["employees"]:
                 tags.append("pm")
             ct.insert("", "end", tags=tags, values=(c["employee"] or "-", c["uid"] or "-", c["citizen"] or "",
                                                     c["reason"], c["status"], c["date"]))
         diff_txt.delete("1.0", "end")
-        diff_txt.insert("1.0", PT.changes_text(snap, st["old"], st["old_label"]))
+        diff_txt.insert("1.0", PT.changes_text(snap, old, st["old_label"]))
         f_txt.delete("1.0", "end")
         f_txt.insert("1.0", PT.f_text(snap))
         emps = snap["employees"].values()
         online = [e for e in emps if e["status"] in pm_ocr.ONLINE]
         STATE.update(n=len(snap["employees"]), online=len(online), calls=sum(1 for e in online if e.get("on_calls")),
                      ask=sum(1 for e in emps if e["status"] in pm_ocr.ASK and not e.get("on_calls")),
-                     changes=len(PT.diff(st["old"], snap)) if st["old"] else 0)
-        info = [f"Сотрудников: {len(snap['employees'])}", f"в сети: {len(online)}"]
+                     changes=len(PT.diff(old, snap)) if old else 0)
+        info = [f"Сотрудников: {len(full['employees'])}", f"в сети: {len(online)}"]
+        if snap.get("hidden"):
+            info.append(f"фильтр скрыл: {snap['hidden']}")
         if snap["has_calls"]:
             info.append(f"вызовов на скринах: {len(snap['calls'])} (самый свежий {snap['calls_newest']})")
         else:
@@ -490,6 +590,201 @@ def build_pm_tab(parent):
                 m["brief"] = ""
             set_mark("", brief="")
 
+    # ---- фильтр
+    def refill():
+        save_cfg(cfg)
+        white_btn.configure(text=f"Вайтлист ({len(cfg['white'])})…")
+        if st["snap"]:
+            fill(st["snap"])
+
+    def filter_toggle():
+        cfg["filter"]["on"] = bool(filter_var.get())
+        refill()
+
+    CHOICES = {"calls": (("all", "все"), ("yes", "катает"), ("no", "не катает")),
+               "group": (("all", "все"), ("yes", "в группе"), ("no", "не в группе")),
+               "brief": (("all", "все"), ("yes", "есть"), ("no", "нет"), ("none", "не отмечен")),
+               "comment": (("all", "все"), ("yes", "есть"), ("no", "нет"))}
+
+    def filter_dialog():
+        if st.get("fdlg") and st["fdlg"].winfo_exists():
+            st["fdlg"].lift()
+            return
+        f = cfg["filter"]
+        dlg = st["fdlg"] = tk.Toplevel(parent)
+        dlg.title("Фильтр: кого показывать в списках")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        dlg.resizable(False, False)
+        pad = {"padx": 12, "pady": 4}
+        ttk.Checkbutton(dlg, text="Фильтр включён", variable=filter_var, command=filter_toggle).grid(
+            row=0, column=0, columnspan=4, sticky="w", padx=12, pady=(12, 6))
+        ttk.Label(dlg, text="Статус:").grid(row=1, column=0, sticky="nw", **pad)
+        sv = {}
+        box = ttk.Frame(dlg)
+        box.grid(row=1, column=1, columnspan=3, sticky="w", **pad)
+        for i, k in enumerate(PT.STATUS_ORDER):
+            sv[k] = tk.BooleanVar(value=k in f["status"])
+            ttk.Checkbutton(box, text=pm_ocr.STATUS_NAME[k], variable=sv[k]).grid(row=i // 3, column=i % 3, sticky="w",
+                                                                              padx=(0, 14), pady=2)
+        ttk.Label(dlg, text="Ранг:").grid(row=2, column=0, sticky="w", **pad)
+        rk = ttk.Frame(dlg)
+        rk.grid(row=2, column=1, columnspan=3, sticky="w", **pad)
+        v_lo, v_hi = tk.StringVar(value=f["rank_min"]), tk.StringVar(value=f["rank_max"])
+        ttk.Label(rk, text="от").pack(side="left")
+        ttk.Entry(rk, textvariable=v_lo, width=5).pack(side="left", padx=4)
+        ttk.Label(rk, text="до").pack(side="left")
+        ttk.Entry(rk, textvariable=v_hi, width=5).pack(side="left", padx=4)
+        ttk.Label(rk, text="(пусто - любой)", style="Muted.TLabel").pack(side="left", padx=6)
+        cv = {}
+        for r, (k, lab) in enumerate((("calls", "Вызовы:"), ("group", "Группа:"), ("brief", "Брифинг:"),
+                                      ("comment", "Комментарий:")), start=3):
+            ttk.Label(dlg, text=lab).grid(row=r, column=0, sticky="w", **pad)
+            cv[k] = tk.StringVar(value=dict(CHOICES[k]).get(f[k], "все"))
+            ttk.Combobox(dlg, textvariable=cv[k], values=[n for _, n in CHOICES[k]], state="readonly", width=14).grid(
+                row=r, column=1, columnspan=3, sticky="w", **pad)
+        ttk.Label(dlg, text="Ник или статик:").grid(row=7, column=0, sticky="w", **pad)
+        v_name = tk.StringVar(value=f["name"])
+        ttk.Entry(dlg, textvariable=v_name, width=24).grid(row=7, column=1, columnspan=3, sticky="w", **pad)
+        ttk.Label(dlg, text="Скрыть не в сети дольше:").grid(row=8, column=0, sticky="w", **pad)
+        oh = ttk.Frame(dlg)
+        oh.grid(row=8, column=1, columnspan=3, sticky="w", **pad)
+        v_off = tk.StringVar(value=f["off_hours"])
+        ttk.Entry(oh, textvariable=v_off, width=5).pack(side="left")
+        ttk.Label(oh, text="ч (пусто - не скрывать)", style="Muted.TLabel").pack(side="left", padx=6)
+        v_wa, v_wo = tk.BooleanVar(value=f["white_always"]), tk.BooleanVar(value=f["white_only"])
+        ttk.Checkbutton(dlg, text="Вайтлист показывать всегда (мимо фильтра)", variable=v_wa).grid(
+            row=9, column=0, columnspan=4, sticky="w", **pad)
+        ttk.Checkbutton(dlg, text="Показывать только вайтлист", variable=v_wo).grid(
+            row=10, column=0, columnspan=4, sticky="w", **pad)
+
+        def apply_(*a):
+            f.update(status=[k for k in PT.STATUS_ORDER if sv[k].get()], rank_min=v_lo.get().strip(),
+                     rank_max=v_hi.get().strip(), name=v_name.get(), off_hours=v_off.get().strip(),
+                     white_always=bool(v_wa.get()), white_only=bool(v_wo.get()))
+            for k in CHOICES:
+                f[k] = next(c for c, n in CHOICES[k] if n == cv[k].get())
+            if not f["on"]:                                          # меняют фильтр - значит, он нужен
+                f["on"] = True
+                filter_var.set(True)
+            refill()
+
+        def reset():
+            on = f["on"]
+            f.clear()
+            f.update(PT.filter_cfg({"on": on}))
+            dlg.destroy()
+            refill()
+            filter_dialog()
+        for v in list(sv.values()) + list(cv.values()) + [v_lo, v_hi, v_name, v_off, v_wa, v_wo]:
+            v.trace_add("write", apply_)
+        bt = ttk.Frame(dlg)
+        bt.grid(row=11, column=0, columnspan=4, sticky="ew", padx=12, pady=(8, 12))
+        ttk.Button(bt, text="Сбросить", command=reset).pack(side="left")
+        ttk.Button(bt, text="Готово", style="Accent.TButton", command=dlg.destroy).pack(side="right")
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
+
+    # ---- вайтлист
+    def white_add(uid, name):
+        for x in cfg["white"]:
+            if (uid and x.get("uid") == uid) or (not uid and not x.get("uid") and x.get("name", "").lower() == name.lower()):
+                return False
+        cfg["white"].append({"uid": uid, "name": name})
+        refill()
+        return True
+
+    def white_remove(uid, e=None):
+        nk = ((e or {}).get("name") or "").lower()
+        cfg["white"] = [x for x in cfg["white"]
+                        if not ((x.get("uid") and x["uid"] == uid) or (not x.get("uid") and x.get("name", "").lower() == nk))]
+        refill()
+
+    def white_dialog():
+        if st.get("wdlg") and st["wdlg"].winfo_exists():
+            st["wdlg"].lift()
+            return
+        dlg = st["wdlg"] = tk.Toplevel(parent)
+        dlg.title("Вайтлист")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        ttk.Label(dlg, text="Кто всегда в списках, даже если фильтр его скрывает.\n"
+                            "Добавить: статик или ник, либо правый щелчок по строке таблицы.",
+                  style="Muted.TLabel").pack(anchor="w", padx=12, pady=(12, 6))
+        wl = tk.Listbox(dlg, width=46, height=14, bg=T.FIELD, fg=T.TEXT, selectbackground=T.ACCENT, relief="flat",
+                        highlightthickness=0, activestyle="none", font=("Segoe UI", 10), selectmode="extended")
+        wl.pack(fill="both", expand=True, padx=12)
+
+        def redraw():
+            wl.delete(0, "end")
+            for x in cfg["white"]:
+                wl.insert("end", f"{x.get('uid') or '—':>7}   {x.get('name') or ''}")
+        row = ttk.Frame(dlg)
+        row.pack(fill="x", padx=12, pady=8)
+        v = tk.StringVar()
+        ent = ttk.Entry(row, textvariable=v, width=26)
+        ent.pack(side="left")
+
+        def add_():
+            t = v.get().strip()
+            if not t:
+                return
+            emps = (st["snap"] or {}).get("employees", {})
+            if t.isdigit():
+                uid, name = t, (emps.get(t) or {}).get("name", "")
+            else:
+                uid = next((u for u, e in emps.items() if (e.get("name") or "").lower() == t.lower()), "")
+                name = emps[uid]["name"] if uid else t
+            white_add(uid, name)
+            v.set("")
+            redraw()
+
+        def add_sel():
+            for uid in et.selection():
+                e = st["snap"]["employees"].get(uid) if st["snap"] else None
+                if e:
+                    white_add(uid, e["name"])
+            redraw()
+
+        def remove_():
+            idx = set(wl.curselection())
+            cfg["white"] = [x for i, x in enumerate(cfg["white"]) if i not in idx]
+            refill()
+            redraw()
+        ent.bind("<Return>", lambda e: add_())
+        ttk.Button(row, text="Добавить", command=add_).pack(side="left", padx=4)
+        ttk.Button(row, text="+ выбранный в таблице", command=add_sel).pack(side="left", padx=4)
+        row2 = ttk.Frame(dlg)
+        row2.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(row2, text="Убрать выделенных", command=remove_).pack(side="left")
+        ttk.Button(row2, text="Готово", style="Accent.TButton", command=dlg.destroy).pack(side="right")
+        redraw()
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
+
+    # ---- правый щелчок по строке
+    menu = tk.Menu(et, tearoff=0, bg=T.PANEL, fg=T.TEXT, activebackground=T.ACCENT, activeforeground=T.TEXT, bd=0)
+
+    def on_menu(e):
+        uid = et.identify_row(e.y)
+        if not uid or not st["snap"] or uid not in st["snap"]["employees"]:
+            return
+        et.selection_set(uid)
+        emp = st["snap"]["employees"][uid]
+        menu.delete(0, "end")
+        if PT.in_white(uid, emp, cfg["white"]):
+            menu.add_command(label="Убрать из вайтлиста", command=lambda: white_remove(uid, emp))
+        else:
+            menu.add_command(label="★ В вайтлист", command=lambda: white_add(uid, emp["name"]))
+        menu.add_command(label="Исправить…", command=edit)
+        menu.tk_popup(e.x_root, e.y_root)
+    et.bind("<Button-3>", on_menu)
+    white_btn.configure(text=f"Вайтлист ({len(cfg['white'])})…")
+
     et.bind("<Button-1>", on_click, add="+")
     et.bind("<Double-1>", on_double)
     et.bind("<Return>", edit)
@@ -547,6 +842,12 @@ def build_pm_tab(parent):
                 if m[0] == "busy":
                     STATE["busy"] = m[1]
                     msg.set(m[1])
+                elif m[0] == "shot":
+                    st["watch_seen"].add(m[1])
+                    add_paths([m[1]])
+                    msg.set(f"Скрин сохранён: {m[1]}")
+                elif m[0] == "folder":
+                    folder_lbl.configure(text=short(m[1]))
                 elif m[0] == "done":
                     STATE["busy"] = ""
                     if m[1] in st["shots"]:

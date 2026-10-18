@@ -166,6 +166,86 @@ def save_marks(marks):
 BRIEF_NAME = {"": "", "yes": "есть", "no": "нет"}
 
 
+# ====================================================================== фильтр и вайтлист
+STATUS_ORDER = ("active", "away", "arena", "jail", "offline", "left")
+FILTER_DEFAULT = {"on": False, "status": list(STATUS_ORDER), "rank_min": "", "rank_max": "",
+                  "calls": "all", "group": "all", "brief": "all", "comment": "all", "name": "", "off_hours": "",
+                  "white_always": True, "white_only": False}
+
+
+def filter_cfg(f):
+    """Настройки фильтра с недостающими полями по умолчанию (старый pm_config.json)."""
+    out = dict(FILTER_DEFAULT)
+    out.update({k: v for k, v in (f or {}).items() if k in FILTER_DEFAULT})
+    return out
+
+
+def _int(s):
+    try:
+        return int(str(s).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def in_white(uid, e, white):
+    """white - [{"uid", "name"}]: совпадение по статику, а без статика - по нику (без учёта регистра)."""
+    nk = (e.get("name") or "").strip().lower()
+    for w in white or []:
+        if w.get("uid") and str(w["uid"]) == str(uid):
+            return True
+        if not w.get("uid") and w.get("name") and w["name"].strip().lower() == nk:
+            return True
+    return False
+
+
+def passes(uid, e, f, white, now=None):
+    """Проходит ли сотрудник фильтр f (FILTER_DEFAULT) с учётом вайтлиста."""
+    w = in_white(uid, e, white)
+    if f.get("white_only"):
+        return w
+    if w and f.get("white_always"):
+        return True
+    st = e.get("status") or "unknown"
+    if st in STATUS_ORDER and st not in f["status"]:
+        return False
+    lo, hi, r = _int(f["rank_min"]), _int(f["rank_max"]), e.get("rank")
+    if (lo is not None or hi is not None) and r is None:
+        return False
+    if lo is not None and r < lo or hi is not None and r > hi:
+        return False
+    if f["calls"] == "yes" and not e.get("on_calls") or f["calls"] == "no" and e.get("on_calls"):
+        return False
+    if f["group"] == "yes" and not e.get("in_group") or f["group"] == "no" and e.get("in_group"):
+        return False
+    b = e.get("brief") or ""
+    if f["brief"] != "all" and b != {"yes": "yes", "no": "no", "none": ""}[f["brief"]]:
+        return False
+    c = bool((e.get("comment") or "").strip())
+    if f["comment"] == "yes" and not c or f["comment"] == "no" and c:
+        return False
+    if f["name"].strip():
+        q = f["name"].strip().lower()
+        if q not in (e.get("name") or "").lower() and q not in str(uid):
+            return False
+    h = _int(f["off_hours"])
+    if h is not None and st == "offline":
+        d = _dt(e.get("offline_since"))
+        if d and ((now or datetime.now()) - d).total_seconds() > h * 3600:
+            return False
+    return True
+
+
+def filtered(snap, f, white):
+    """Снимок только с теми, кто проходит фильтр (если он включён). Поле hidden - сколько скрыто."""
+    if not snap:
+        return snap
+    f = filter_cfg(f)
+    if not f["on"]:
+        return dict(snap, hidden=0)
+    emp = {u: e for u, e in snap["employees"].items() if passes(u, e, f, white)}
+    return dict(snap, employees=emp, hidden=len(snap["employees"]) - len(emp))
+
+
 # ====================================================================== порядок списка между проверками
 ROSTER_KEYS = ("name", "rank", "status", "offline_since", "num")
 
