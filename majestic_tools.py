@@ -246,6 +246,11 @@ def main():
     names["click"] = "Кликер"
     names["wood"] = "Лесоруб"
 
+    def _bundle():
+        """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
+        Новый бот в TEST_BOTS - дописать и сюда."""
+        import sanding, clicker, woodcut  # noqa: F401
+
     def make_test():
         """Страница «Тест»: сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
         page = pages["test"]
