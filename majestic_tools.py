@@ -45,6 +45,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("rec", "⏺", "Запись", "Запись экрана и нажатий для разбора: по ней можно восстановить логику нового бота"),
     ("afk", "♻", "Анти-АФК", "Случайные нажатия по пресету, еда и вода по значкам на экране"),
     ("test", "⚗", "Тест", "Боты на проверке: у каждого свой переключатель; доступ выдаётся ключом"),
+    ("wood", "♣", "Лесоруб", "Рубку и ветки в мини-игре бот проходит сам: к дереву подходишь и жмёшь E ты"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -236,20 +237,18 @@ def main():
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
     built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
-    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "test": "Тест"}
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "test": "Тест"}
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
     TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
-                 ("click", "Кликер", "clicker", "build_clicker_tab"),
-                 ("wood", "Лесоруб", "woodcut", "build_wood_tab")]
+                 ("click", "Кликер", "clicker", "build_clicker_tab")]
     names["sand"] = "Шлифовка"
     names["click"] = "Кликер"
-    names["wood"] = "Лесоруб"
 
     def _bundle():
         """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
         Новый бот в TEST_BOTS - дописать и сюда."""
-        import sanding, clicker, woodcut  # noqa: F401
+        import sanding, clicker  # noqa: F401
 
     def make_test():
         """Страница «Тест»: сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
@@ -302,6 +301,9 @@ def main():
         if key == "afk":
             import antiafk
             return antiafk.build_antiafk_tab(pages["afk"])
+        if key == "wood":
+            import woodcut
+            return woodcut.build_wood_tab(pages["wood"])
         import fishing
         return fishing.build_fishing_tab(pages["fish"])
 
@@ -328,7 +330,7 @@ def main():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
         def allowed(k):
             return k in access["set"] or (k == "test" and L.has_master())
-        for key in ("bot", "afk", "fish", "test"):
+        for key in ("bot", "afk", "fish", "wood", "test"):
             if allowed(key) and key not in built:
                 for w in list(pages[key].winfo_children()):
                     w.destroy()
@@ -342,7 +344,7 @@ def main():
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish", "test") and not allowed(state["page"]):
+        if state.get("page") in ("bot", "afk", "fish", "wood", "test") and not allowed(state["page"]):
             select("home")
 
     sync_tabs()

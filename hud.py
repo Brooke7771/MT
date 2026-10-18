@@ -18,10 +18,10 @@ KEY = "#010203"
 CARD = "#13131a"
 EDGE = "#262630"
 TRACK = "#0b0b10"
-ORDER = ["fish", "bot", "afk", "sand"]
-TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка"}
-GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒"}
-COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347"}
+ORDER = ["fish", "bot", "wood", "afk", "sand"]
+TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a"}
 WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
 CW, CH, GAP = 284, 92, 10
@@ -216,7 +216,7 @@ class Hud:
         t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
         items = dict(d.get("items", []))
-        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок"}[key]
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев"}[key]
         val = items.get(main_label, 0)
         c["num"] += (val - c["num"]) * 0.25
         if int(val) != c["last"]:
@@ -292,7 +292,7 @@ class Hud:
         by = y0 + CH - 17
         self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
         num = str(int(round(c["num"])))
-        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок"}[key]
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев"}[key]
         right = X(CW - 14)
         tail = f" {unit}{rate}"
         self._txt(right, by, tail, 8, False, T.MUTED, "e")

@@ -232,7 +232,7 @@ def build_wood_tab(parent):
 
     def toggle():
         if not switches.is_on("wood") and not ctl["active"]:
-            log("Лесоруб выключен: включи его переключателем наверху страницы «Тест»")
+            log("Лесоруб выключен: включи его переключателем в меню слева")
             return
         ctl["active"] = not ctl["active"]
 

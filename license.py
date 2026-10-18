@@ -28,8 +28,8 @@ MASTER_KEYS = []
 
 OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
 FREE = {"ram", "cook", "market", "pm"}           # всегда доступно без ключа
-LOCKED = ["bot", "afk", "fish", "test"]  # под ключом ("test" - страница с ботами на проверке)
-ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "test": "Тест (боты на проверке)",
+LOCKED = ["bot", "afk", "fish", "wood", "test"]  # под ключом ("test" - страница с ботами на проверке)
+ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "test": "Тест (боты на проверке)",
                 "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок", "pm": "PM (таблица по скринам)"}
 
 
@@ -211,6 +211,8 @@ def granted(res):
     acc = set(FREE)
     if res and res.get("ok"):
         acc |= set(res.get("accesses", []))
+    if has_master():                    # владельцу (мастер-ключ на этом ПК) видны все закрытые разделы
+        acc |= set(LOCKED)
     return acc
 
 

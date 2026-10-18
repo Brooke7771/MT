@@ -16,7 +16,7 @@ SIDE_W = 240
 CARD = "#15151c"
 EDGE = "#262630"
 DIM = "#5d5d68"
-LOCKED = {"bot", "fish", "afk"}
+LOCKED = {"bot", "fish", "afk", "wood"}
 
 
 def _lerp(a, b, k):
@@ -25,7 +25,7 @@ def _lerp(a, b, k):
 
 # ====================================================================== боковое меню
 class Sidebar(tk.Canvas):
-    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
+    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "wood", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
               ("СИСТЕМА", ["rec", "admin"])]
     ITEM_H, GAP, TOP = 42, 4, 98
 
@@ -45,27 +45,44 @@ class Sidebar(tk.Canvas):
         self.bind("<Motion>", self._motion)
         self.bind("<Leave>", lambda e: self._set_hover(None))
         self.bind("<Button-1>", self._click)
+        self.bind("<Configure>", lambda e: self._layout())
+        self.ih = self.ITEM_H
         self._loop()
 
     # ---- данные
     def set_items(self, items):
         """items: [(key, значок, название)]"""
         self.meta = {k: (g, n) for k, g, n in items}
-        rows, y = [], self.TOP
-        for title, ks in self.GROUPS:
-            ks = [k for k in ks if k in self.meta]
-            if not ks:
-                continue
-            if title:
-                rows.append(("head", title, y))
-                y += 28
-            for k in ks:
-                rows.append(("item", k, y))
-                y += self.ITEM_H + self.GAP
-            y += 8
-        self.rows = rows
+        self._layout()
         if self.sel not in self.meta:
             self.sel = None
+
+    def _layout(self):
+        """Раскладка пунктов; если по высоте не влезает (до карточки ключа внизу) - пункты плотнее."""
+        groups = [(t, [k for k in ks if k in self.meta]) for t, ks in self.GROUPS]
+        groups = [(t, ks) for t, ks in groups if ks]
+        n_items = sum(len(ks) for _, ks in groups)
+        n_heads = sum(1 for t, _ in groups if t)
+        H = self.winfo_height()
+        room = (H if H > 50 else 2000) - 82 - 10 - self.TOP
+        ih, gap, head, sep = self.ITEM_H, self.GAP, 28, 8
+        need = lambda: n_items * (ih + gap) + n_heads * head + len(groups) * sep
+        while need() > room and ih > 30:
+            ih -= 1
+            head = max(20, head - 1)
+            sep = max(2, sep - 1)
+            gap = 2 if ih < 38 else gap
+        self.ih = ih
+        rows, y = [], self.TOP
+        for title, ks in groups:
+            if title:
+                rows.append(("head", title, y))
+                y += head
+            for k in ks:
+                rows.append(("item", k, y))
+                y += ih + gap
+            y += sep
+        self.rows = rows
 
     def select(self, key):
         self.sel = key
@@ -84,7 +101,7 @@ class Sidebar(tk.Canvas):
     # ---- мышь
     def _hit(self, e):
         for kind, k, y in self.rows:
-            if kind == "item" and y <= e.y <= y + self.ITEM_H and 10 <= e.x <= SIDE_W - 10:
+            if kind == "item" and y <= e.y <= y + self.ih and 10 <= e.x <= SIDE_W - 10:
                 return k, (k in self.switchable and e.x >= SIDE_W - 66)
         H = self.winfo_height()
         if H - 82 <= e.y <= H - 12 and 12 <= e.x <= SIDE_W - 12:
@@ -158,8 +175,8 @@ class Sidebar(tk.Canvas):
         if self.sel is not None and self.sel_y is not None and self._y(self.sel) is not None:
             y = self.sel_y
             glow = 0.62 + 0.1 * math.sin(t * 2)
-            _rrect(self, 10, y, W - 10, y + self.ITEM_H, 11, fill="#1d1017", outline=mix(T.ACCENT, T.SIDEBAR, glow))
-            _rrect(self, 10, y + 10, 14, y + self.ITEM_H - 10, 2, fill=T.ACCENT, outline="")
+            _rrect(self, 10, y, W - 10, y + self.ih, 11, fill="#1d1017", outline=mix(T.ACCENT, T.SIDEBAR, glow))
+            _rrect(self, 10, y + 10, 14, y + self.ih - 10, 2, fill=T.ACCENT, outline="")
         for kind, k, y in self.rows:
             if kind == "head":
                 self.create_text(24, y + 14, text=k, anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
@@ -168,8 +185,8 @@ class Sidebar(tk.Canvas):
             on = k == self.sel
             h = self.hov.get(k, 0.0)
             if h > 0.02 and not on:
-                _rrect(self, 10, y, W - 10, y + self.ITEM_H, 11, fill=mix(T.SIDEBAR, "#1a1a22", h), outline="")
-            cy = y + self.ITEM_H / 2
+                _rrect(self, 10, y, W - 10, y + self.ih, 11, fill=mix(T.SIDEBAR, "#1a1a22", h), outline="")
+            cy = y + self.ih / 2
             gx = 36 + (2 * h if not on else 3)
             self.create_text(gx, cy, text=glyph, fill=T.ACCENT_HOVER if on else mix(T.MUTED, T.TEXT, h),
                              font=("Segoe UI Symbol", 12))
@@ -202,6 +219,7 @@ class Sidebar(tk.Canvas):
 TILES = [
     ("bot", "✂", "Швейный бот", "Автошитьё в ателье"),
     ("fish", "⚓", "Рыбалка", "Полный цикл ловли"),
+    ("wood", "♣", "Лесоруб", "Рубка и ветки сами"),
     ("afk", "♻", "Анти-АФК", "Нажатия, еда и вода"),
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память игры"),
     ("cook", "♨", "Готовка", "Калькулятор и таймеры"),
@@ -362,7 +380,7 @@ class HomePage(tk.Canvas):
                     return lab[0], col, (f"{n} позиций" if n else "")
                 return lab[0], col, ""
             items = d.get("items") or [("", 0)]
-            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок"}.get(key, "")
+            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок", "wood": "деревьев"}.get(key, "")
             metric = f"{items[0][1]} {unit}"
             st = str(d.get("status", ""))
             if d.get("active"):
@@ -441,12 +459,12 @@ class HomePage(tk.Canvas):
             import stats
         except Exception:
             stats = None
-        order = [k for k in ("fish", "bot", "afk", "sand") if k in locked_ok]
+        order = [k for k in ("fish", "bot", "wood", "afk", "sand") if k in locked_ok]
         if stats and order:
             ys = y
             self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
             y += 24
-            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано"}
+            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано", "wood": "Деревьев"}
             cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
             secs = sum(stats.get(k)["secs"] for k in order)
             cells.append(("#time", "Время работы", secs))
