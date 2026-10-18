@@ -1,5 +1,5 @@
-# Собирает MajesticTools.exe на сервере GitHub, когда ты публикуешь релиз,
-# и прикладывает exe к этому релизу. Программы у всех сами его подхватят.
+# Собирает exe на сервере GitHub, когда ты публикуешь релиз, и прикладывает его к этому релизу.
+# Тег vX.Y.Z - Majestic Tools (MajesticTools.exe), тег pm-vX.Y.Z - отдельная программа Majestic PM (MajesticPM.exe).
 name: Сборка exe
 
 on:
@@ -30,22 +30,28 @@ jobs:
         run: |
           $tag = "${{ github.event.release.tag_name }}"
           if (-not $tag) { $tag = "0.0.0-manual" }
+          if ($tag.StartsWith("pm-")) {
+            $tag = $tag.Substring(3)
+            "APP=MajesticPM`nSCRIPT=pm_tools.py" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            "APP=MajesticTools`nSCRIPT=majestic_tools.py" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
           $v = $tag.TrimStart("v", "V")
           "__version__ = `"$v`"`nREPO = `"${{ github.repository }}`"`n" | Set-Content -Path version.py -Encoding utf8
           Get-Content version.py
 
       - name: Сборка
-        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --add-data "woodcut_assets.npz;." --name MajesticTools majestic_tools.py
+        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --add-data "woodcut_assets.npz;." --name ${{ env.APP }} ${{ env.SCRIPT }}
 
       - name: Приложить exe к релизу
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/MajesticTools.exe
+          files: dist/${{ env.APP }}.exe
 
       - name: Сохранить exe (ручной запуск)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: MajesticTools
-          path: dist/MajesticTools.exe
+          name: ${{ env.APP }}
+          path: dist/${{ env.APP }}.exe

@@ -242,8 +242,9 @@ def clean(patterns, standby, log):
 
 
 # ================================================================ окно
-def build_ram_tab(parent):
-    """Рисует чистильщик внутри parent. Возвращает функцию остановки."""
+def build_ram_tab(parent, key_bar=True):
+    """Рисует чистильщик внутри parent. Возвращает функцию остановки. key_bar=False - без блока ключа
+    (отдельная бесплатная программа PM)."""
     import queue
     import tkinter as tk
     from tkinter import ttk
@@ -255,9 +256,10 @@ def build_ram_tab(parent):
     pad = {"padx": 8, "pady": 3}
 
     try:
-        import licenseui, license as _L
-        kb = licenseui.build_key_bar(parent, lambda: None)
-        kb.grid(row=99, column=0, columnspan=4, sticky="ew", **pad)
+        if key_bar:
+            import licenseui
+            kb = licenseui.build_key_bar(parent, lambda: None)
+            kb.grid(row=99, column=0, columnspan=4, sticky="ew", **pad)
     except Exception:
         pass
     ram_var = tk.StringVar()

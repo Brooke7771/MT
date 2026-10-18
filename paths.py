@@ -12,6 +12,7 @@ _OLD = ("license_key.txt", "license_cache.json", "admin_key.txt", "modules_confi
         "ram_cleaner_config.json", "cooking_config.json", "cooking_timers.json",
         "antiafk_templates", "cache")
 _done = {}
+APP = "MajesticTools"          # имя папки данных; у отдельной программы PM своё (pm_tools.py)
 
 
 def data_dir():
@@ -20,13 +21,14 @@ def data_dir():
     if "d" in _done:
         return _done["d"]
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    d = os.path.join(base, "MajesticTools")
+    d = os.path.join(base, APP)
     try:
         os.makedirs(d, exist_ok=True)
     except OSError:
         d = os.path.dirname(sys.executable)
     _done["d"] = d
-    _migrate(d)
+    if APP == "MajesticTools":
+        _migrate(d)
     return d
 
 

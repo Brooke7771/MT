@@ -12,8 +12,11 @@ import net
 
 from version import __version__, REPO
 
+# канал обновлений: у основной программы теги vX.Y.Z, у отдельной программы PM - pm-vX.Y.Z (pm_tools.py меняет их)
+TAG_PREFIX = "v"
 ASSET_NAME = "MajesticTools.exe"
 API = "https://api.github.com/repos/{}/releases/latest"
+API_LIST = "https://api.github.com/repos/{}/releases?per_page=40"
 UA = {"User-Agent": "MajesticTools-updater"}
 
 
@@ -30,11 +33,17 @@ def check():
     """None - обновлений нет, иначе dict(version, url, size, notes)."""
     if not REPO:
         raise RuntimeError("эта копия собрана не на GitHub, обновлять неоткуда")
-    req = urllib.request.Request(API.format(REPO),
-                                 headers=dict(UA, Accept="application/vnd.github+json"))
+    url = (API if TAG_PREFIX == "v" else API_LIST).format(REPO)
+    req = urllib.request.Request(url, headers=dict(UA, Accept="application/vnd.github+json"))
     with net.urlopen(req, timeout=10) as r:
         data = json.load(r)
+    if isinstance(data, list):                   # свой канал: самый новый релиз со своим префиксом
+        data = next((d for d in data if not d.get("draft") and not d.get("prerelease")
+                     and d.get("tag_name", "").startswith(TAG_PREFIX)), {})
     tag = data.get("tag_name", "")
+    if not tag.startswith(TAG_PREFIX):
+        return None
+    tag = tag[len(TAG_PREFIX):]
     if parse_ver(tag) <= parse_ver(__version__):
         return None
     for a in data.get("assets", []):
