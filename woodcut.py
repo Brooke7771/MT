@@ -33,9 +33,10 @@ HINT = (1590, 990, 1700, 1018)         # «Рубка дерева» над по
 AXIS = ((680, 510), (1232, 330))       # ось бревна, концы
 DIFF, MIN_AREA = 40, 200
 IGNORE = (1222, 332, 1302, 382)        # верх пня (1080p): не ветка
-AIM, AIM_FAR = 0.6, 0.85               # куда кликать вдоль ветки (доля длины от основания)
+AIMS = (0.6, 0.85, 0.45, 0.75)         # куда кликать вдоль ветки (доля длины от основания), по попыткам
+STUMP = (1172, 335, 1300, 400)         # пень (1080p): клик по ветке над ним перехватывает пень
 CLICK_OFF = 14                        # px от края бревна: ближе ветка не кликается
-WAIT_GONE = 0.28                       # сколько ждать после серии кликов, пока ветки исчезнут
+WAIT_GONE = 0.36                       # сколько ждать после серии кликов, пока ветки исчезнут
 
 
 def app_dir():
@@ -172,9 +173,14 @@ class Vision:
             dist = np.hypot(xs - xs[base], ys - ys[base])
             L = max(1.0, float(dist.max()))
             th = dt[ys, xs]
-            j = int(np.argmin(np.abs(dist - AIM * L) - 0.8 * np.minimum(th, 3)))
-            far = int(np.argmin(np.abs(dist - AIM_FAR * L) - 0.8 * np.minimum(th, 3)))
-            out.append({"pt": (int(xs[j]) + x0, int(ys[j]) + y0), "far": (int(xs[far]) + x0, int(ys[far]) + y0),
+            # над пнём клик не проходит (пень лежит поверх ветки, запись 20261018_042530) - туда не целимся
+            sx0, sy0, sx1, sy1 = STUMP
+            okp = ~((xs + x0 >= sx0) & (xs + x0 <= sx1) & (ys + y0 >= sy0) & (ys + y0 <= sy1))
+            if okp.sum() < 5:
+                okp[:] = True
+            cost = lambda a: np.where(okp, np.abs(dist - a * L) - 0.8 * np.minimum(th, 3), 1e9)
+            aims = [(int(xs[k]) + x0, int(ys[k]) + y0) for k in (int(np.argmin(cost(a))) for a in AIMS)]
+            out.append({"pt": aims[0], "far": aims[1], "aims": aims,
                         "base": (int(xs[base]) + x0, int(ys[base]) + y0), "area": int(st[i][4])})
             if debug:
                 out[-1]["pix"] = (xs + x0, ys + y0)
@@ -411,7 +417,7 @@ def build_wood_tab(parent):
                         skip.append((t[0], t[1]))
                         log(f"Ветка у {t[0]},{t[1]} не убирается - пропускаю")
                         continue
-                    target = b["pt"] if t[2] % 2 == 0 else b["far"]          # чередуем: ~60% и ~85% длины
+                    target = b["aims"][t[2] % len(b["aims"])]                # каждая попытка - другое место ветки
                     stats["view"]["t"] = target
                     inp.move_to(*to_screen(target))
                     time.sleep(0.03)
