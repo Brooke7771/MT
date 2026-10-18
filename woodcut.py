@@ -32,7 +32,10 @@ PANEL = (700, 985, 1260, 1020)         # надпись «Прогресс оч�
 HINT = (1590, 990, 1700, 1018)         # «Рубка дерева» над полоской рубки
 AXIS = ((680, 510), (1232, 330))       # ось бревна, концы
 DIFF, MIN_AREA = 40, 200
-WAIT_GONE = 0.33                       # сколько ждать после клика, пока ветка исчезнет
+IGNORE = (1222, 332, 1302, 382)        # верх пня (1080p): не ветка
+AIM, AIM_FAR = 0.6, 0.85               # куда кликать вдоль ветки (доля длины от основания)
+CLICK_OFF = 14                        # px от края бревна: ближе ветка не кликается
+WAIT_GONE = 0.28                       # сколько ждать после серии кликов, пока ветки исчезнут
 
 
 def app_dir():
@@ -52,7 +55,7 @@ CONFIG_PATH = os.path.join(app_dir(), "woodcut_config.json")
 
 def default_config():
     return {"toggle_vk": 0x68,            # Numpad 8
-            "cps": 6.0, "chop": True, "branches": True, "focus_only": True}
+            "cps": 8.0, "chop": True, "branches": True, "focus_only": True}
 
 
 def load_config():
@@ -90,6 +93,24 @@ class Vision:
         k = np.clip(((p - A) @ (B - A)) / ((B - A) @ (B - A)), 0, 1)
         self.axd = np.linalg.norm(p - (A + k[:, None] * (B - A)), axis=1).reshape(h, w)
         self.k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        K = lambda n: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (n, n))
+        # само бревно (без веток): всё не-травяное на площадке у оси; ветки и ножки ламп тонкие - срезаются
+        hsv = cv2.cvtColor(self.ref, cv2.COLOR_BGR2HSV)
+        grass = (hsv[..., 0] >= 28) & (hsv[..., 0] <= 90) & (hsv[..., 1] > 70) & (hsv[..., 2] > 22)   # и трава в тени
+        logm = (self.over & ~grass & (self.axd < 110)).astype(np.uint8)
+        logm = cv2.morphologyEx(logm, cv2.MORPH_OPEN, K(17))
+        n, lab, st, _ = cv2.connectedComponentsWithStats(logm, 8)
+        self.logm = (lab == 1 + int(np.argmax(st[1:, 4]))).astype(np.uint8) if n > 1 else logm
+        self.dlog = cv2.distanceTransform((1 - self.logm).astype(np.uint8), cv2.DIST_L2, 3)
+        self.touch = cv2.dilate(self.logm, K(15)).astype(bool)
+        # мир за площадкой рядом с бревном: тут ищем ветки, торчащие над лесом (эталон тут бесполезен)
+        self.world = ~self.over & (self.dlog < 230)
+        self.K7 = K(7)
+        # верх пня: в 90% кадров обеих записей там «находилась ветка», которой нет (и она склеивалась с настоящей)
+        ix0, iy0, ix1, iy1 = IGNORE
+        self.world[iy0 - self.roi[1]:iy1 - self.roi[1], ix0 - self.roi[0]:ix1 - self.roi[0]] = False
+        self.ign = np.zeros_like(self.over)
+        self.ign[iy0 - self.roi[1]:iy1 - self.roi[1], ix0 - self.roi[0]:ix1 - self.roi[0]] = True
 
     @staticmethod
     def norm(frame):
@@ -120,27 +141,43 @@ class Vision:
             return "chop"
         return None
 
-    def branches(self, f):
-        """-> [{"pt": основание (x, y), "far": точка дальше по ветке, "area": ..}] в координатах 1080p."""
+    def branches(self, f, debug=False):
+        """-> [{"pt": куда кликать, "far": запасная точка на другом конце ветки, "area": ..}] в координатах 1080p."""
         x0, y0, x1, y1 = self.roi
         c = f[y0:y1, x0:x1]
         diff = cv2.absdiff(c, self.ref).max(axis=2)
         b, g, r = [c[..., i].astype(np.int16) for i in range(3)]
-        twig = (r >= g - 6) & (g >= b - 10) & (c.max(axis=2) > 60)
-        cand = ((diff > DIFF) & twig & self.over).astype(np.uint8)
-        cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        v = c.max(axis=2)
+        twig = (r >= g - 6) & (g >= b - 10) & (v > 60)
+        cand = ((diff > DIFF) & twig & self.over & ~self.ign).astype(np.uint8)
+        # над лесом: светлое тонкое коричневое (толстое - стволы деревьев на фоне)
+        wc = (twig & (v > 85) & (r - b < 90) & self.world).astype(np.uint8)
+        wc = wc & ~cv2.morphologyEx(wc, cv2.MORPH_OPEN, self.K7)
+        cand = cv2.morphologyEx(cand | wc, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(cand, self.k5), 8)    # куски одной ветки - вместе
+        dt = cv2.distanceTransform(cand, cv2.DIST_L2, 3)
         out = []
         for i in range(1, n):
             if st[i][4] < MIN_AREA:
                 continue
-            ys, xs = np.where((lab == i) & (cand > 0))           # точки клика - только по самой ветке
+            m = lab == i
+            if not (m & self.touch).any():
+                continue                                          # не растёт из бревна - фон
+            ys, xs = np.where(m & (cand > 0))                     # точки клика - только по самой ветке
             if len(xs) == 0:
                 continue
-            dd = self.axd[ys, xs]
-            j, jf = int(np.argmin(dd)), int(np.argmax(dd))
-            out.append({"pt": (int(xs[j]) + x0, int(ys[j]) + y0), "far": (int(xs[jf]) + x0, int(ys[jf]) + y0),
-                        "area": int(st[i][4])})
+            # по двум записям: клик во внешнюю половину ветки срабатывает в 96% случаев, у основания - в 33%;
+            # поэтому целимся на ~60% длины от основания (основание - ближе всего к оси бревна), запасная - ~85%
+            base = int(np.argmin(self.axd[ys, xs]))
+            dist = np.hypot(xs - xs[base], ys - ys[base])
+            L = max(1.0, float(dist.max()))
+            th = dt[ys, xs]
+            j = int(np.argmin(np.abs(dist - AIM * L) - 0.8 * np.minimum(th, 3)))
+            far = int(np.argmin(np.abs(dist - AIM_FAR * L) - 0.8 * np.minimum(th, 3)))
+            out.append({"pt": (int(xs[j]) + x0, int(ys[j]) + y0), "far": (int(xs[far]) + x0, int(ys[far]) + y0),
+                        "base": (int(xs[base]) + x0, int(ys[base]) + y0), "area": int(st[i][4])})
+            if debug:
+                out[-1]["pix"] = (xs + x0, ys + y0)
         out.sort(key=lambda bb: bb["pt"][0])
         return out
 
@@ -279,6 +316,9 @@ def build_wood_tab(parent):
             x0 = (W - BASE_W * k) / 2
             return int(scr.mon["left"] + x0 + p[0] * k), int(scr.mon["top"] + p[1] * k)
 
+        def near(p, pts, r=24):
+            return any(abs(p[0] - q[0]) < r and abs(p[1] - q[1]) < r for q in pts)
+
         def lclick():
             inp.mouse(AF.MOUSEEVENTF_LEFTDOWN)
             time.sleep(random.uniform(0.03, 0.06))
@@ -352,35 +392,44 @@ def build_wood_tab(parent):
                 last_mini = now
                 stats["state"] = "mini"
                 bs = vis.branches(f)
-                live = [b for b in bs if not any(abs(b["pt"][0] - s[0]) < 22 and abs(b["pt"][1] - s[1]) < 22 for s in skip)]
+                live = [b for b in bs if not near(b["base"], skip)]
                 stats["view"] = {"br": [b["pt"] for b in bs], "skip": list(skip)}
                 ctl["status"] = f"Убираю ветки: осталось {len(live)}"
                 if not cfg["branches"] or not live:
-                    time.sleep(0.05)
+                    time.sleep(0.03)
                     continue
-                b = live[0]
-                t = next((x for x in tries if abs(x[0] - b["pt"][0]) < 22 and abs(x[1] - b["pt"][1]) < 22), None)
-                if t is None:
-                    t = [b["pt"][0], b["pt"][1], 0]
-                    tries.append(t)
-                if t[2] >= 4:
-                    skip.append((t[0], t[1]))
-                    log(f"Ветка у {t[0]},{t[1]} не убирается - пропускаю")
+                # серия: по разу в каждую ветку, потом одна проверка (раньше - клик, ждать, проверить)
+                clicked = []
+                for b in live:
+                    t = next((x for x in tries if near(b["base"], [x])), None)
+                    if t is not None and any(t is c for c in clicked):
+                        continue                                  # две находки у одного основания - одна ветка
+                    if t is None:
+                        t = [b["base"][0], b["base"][1], 0]
+                        tries.append(t)
+                    if t[2] >= 4:
+                        skip.append((t[0], t[1]))
+                        log(f"Ветка у {t[0]},{t[1]} не убирается - пропускаю")
+                        continue
+                    target = b["pt"] if t[2] % 2 == 0 else b["far"]          # чередуем: ~60% и ~85% длины
+                    stats["view"]["t"] = target
+                    inp.move_to(*to_screen(target))
+                    time.sleep(0.03)
+                    lclick()
+                    t[2] += 1
+                    stats["clicks"] += 1
+                    clicked.append(t)
+                    time.sleep(0.04)
+                if not clicked:
                     continue
-                target = b["pt"] if t[2] < 2 else b["far"]
-                stats["view"]["t"] = target
-                inp.move_to(*to_screen(target))
-                time.sleep(0.04)
-                lclick()
-                t[2] += 1
-                stats["clicks"] += 1
                 time.sleep(WAIT_GONE)
                 f2 = vis.norm(np.ascontiguousarray(scr.grab()[:, :, :3]))
-                if vis.phase(f2) != "mini" or not any(abs(x["pt"][0] - b["pt"][0]) < 22 and abs(x["pt"][1] - b["pt"][1]) < 22
-                                                       for x in vis.branches(f2)):
-                    stats["branches"] += 1
-                    mini_n0 += 1
-                    tries.remove(t)
+                left = vis.branches(f2) if vis.phase(f2) == "mini" else []
+                for t in clicked:
+                    if not near((t[0], t[1]), [b["base"] for b in left]) and t in tries:
+                        stats["branches"] += 1
+                        mini_n0 += 1
+                        tries.remove(t)
             else:
                 BUSY["on"] = False
                 stats["state"] = "idle"
