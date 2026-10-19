@@ -62,7 +62,7 @@ CONFIG_PATH = os.path.join(app_dir(), "mining_config.json")
 
 def default_config():
     return {"toggle_vk": 0x67,            # Numpad 7 (Numpad 9 в игре - навигатор)
-            "cps": 6.0, "dig": True, "ores": True, "focus_only": True}
+            "cps": 6.0, "mini_cps": 3.0, "dig": True, "ores": True, "focus_only": True}
 
 
 def load_config():
@@ -274,7 +274,11 @@ def build_mine_tab(parent):
     ttk.Spinbox(box, from_=2, to=15, increment=0.5, width=6, textvariable=cps_var,
                 command=lambda: save()).grid(row=1, column=2, sticky="w", **pad)
     ttk.Checkbutton(box, text="Собирать руду в мини-игре", variable=ore_var, command=lambda: save()).grid(
-        row=2, column=0, columnspan=3, sticky="w", **pad)
+        row=2, column=0, sticky="w", **pad)
+    mini_var = tk.DoubleVar(value=float(cfg["mini_cps"]))
+    ttk.Label(box, text="скорость, кликов в секунду:").grid(row=2, column=1, sticky="e", **pad)
+    ttk.Spinbox(box, from_=0.5, to=10, increment=0.5, width=6, textvariable=mini_var,
+                command=lambda: save()).grid(row=2, column=2, sticky="w", **pad)
     ttk.Checkbutton(box, text="Только когда активно окно игры", variable=focus_var, command=lambda: save()).grid(
         row=3, column=0, columnspan=3, sticky="w", **pad)
 
@@ -283,10 +287,15 @@ def build_mine_tab(parent):
             cfg["cps"] = max(2.0, min(15.0, float(cps_var.get())))
         except (tk.TclError, ValueError):
             pass
+        try:
+            cfg["mini_cps"] = max(0.5, min(10.0, float(mini_var.get())))
+        except (tk.TclError, ValueError):
+            pass
         cfg["dig"], cfg["ores"] = bool(dig_var.get()), bool(ore_var.get())
         cfg["focus_only"] = bool(focus_var.get())
         save_config(cfg)
     cps_var.trace_add("write", lambda *a: save())
+    mini_var.trace_add("write", lambda *a: save())
 
     logbox = tk.Text(parent, height=10, width=80, state="disabled", font=("Consolas", 9))
     logbox.grid(row=5, column=0, columnspan=4, **pad)
@@ -324,7 +333,17 @@ def build_mine_tab(parent):
         def grab():
             return vis.norm(np.ascontiguousarray(scr.grab()[:, :, :3]))
 
+        def pace():
+            """Пауза перед кликом в мини-игре - по скорости из настроек. False - бота выключили."""
+            end = last_hit[0] + random.uniform(0.85, 1.15) / max(0.5, cfg["mini_cps"])
+            while time.time() < end:
+                if ctl["quit"] or not ctl["active"]:
+                    return False
+                time.sleep(0.01)
+            return True
+
         prev = was = False
+        last_hit = [0.0]            # когда был последний клик в мини-игре
         phase_prev = None
         next_click = 0.0
         tries = []                  # [(x, y, кликов)] - куски в этой мини-игре, по которым уже кликали
@@ -370,6 +389,7 @@ def build_mine_tab(parent):
                     log("Добыча: кликаю")
                 elif ph == "mini":
                     tries, skip, sens = [], [], False
+                    last_hit[0] = now
                     mini_t0 = last_seen = now
                     mini_n0 = 0
                     log("Мини-игра: собираю руду")
@@ -424,10 +444,13 @@ def build_mine_tab(parent):
                     if t[2] >= TRIES:
                         skip.append((t[0], t[1]))
                         continue
+                    if not pace():
+                        break
                     stats["view"]["t"] = o["pt"]
                     inp.move_to(*to_screen(o["pt"]))
                     time.sleep(0.03)
                     lclick()
+                    last_hit[0] = time.time()
                     t[2] += 1
                     stats["clicks"] += 1
                     clicked.append(t)

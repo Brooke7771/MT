@@ -56,7 +56,7 @@ CONFIG_PATH = os.path.join(app_dir(), "woodcut_config.json")
 
 def default_config():
     return {"toggle_vk": 0x68,            # Numpad 8
-            "cps": 8.0, "chop": True, "branches": True, "focus_only": True}
+            "cps": 8.0, "mini_cps": 3.0, "chop": True, "branches": True, "focus_only": True}
 
 
 def load_config():
@@ -283,7 +283,11 @@ def build_wood_tab(parent):
     ttk.Spinbox(box, from_=2, to=15, increment=0.5, width=6, textvariable=cps_var,
                 command=lambda: save()).grid(row=1, column=2, sticky="w", **pad)
     ttk.Checkbutton(box, text="Убирать ветки в мини-игре", variable=br_var, command=lambda: save()).grid(
-        row=2, column=0, columnspan=3, sticky="w", **pad)
+        row=2, column=0, sticky="w", **pad)
+    mini_var = tk.DoubleVar(value=float(cfg["mini_cps"]))
+    ttk.Label(box, text="скорость, кликов в секунду:").grid(row=2, column=1, sticky="e", **pad)
+    ttk.Spinbox(box, from_=0.5, to=10, increment=0.5, width=6, textvariable=mini_var,
+                command=lambda: save()).grid(row=2, column=2, sticky="w", **pad)
     ttk.Checkbutton(box, text="Только когда активно окно игры", variable=focus_var, command=lambda: save()).grid(
         row=3, column=0, columnspan=3, sticky="w", **pad)
 
@@ -292,10 +296,15 @@ def build_wood_tab(parent):
             cfg["cps"] = max(2.0, min(15.0, float(cps_var.get())))
         except (tk.TclError, ValueError):
             pass
+        try:
+            cfg["mini_cps"] = max(0.5, min(10.0, float(mini_var.get())))
+        except (tk.TclError, ValueError):
+            pass
         cfg["chop"], cfg["branches"] = bool(chop_var.get()), bool(br_var.get())
         cfg["focus_only"] = bool(focus_var.get())
         save_config(cfg)
     cps_var.trace_add("write", lambda *a: save())
+    mini_var.trace_add("write", lambda *a: save())
 
     logbox = tk.Text(parent, height=10, width=80, state="disabled", font=("Consolas", 9))
     logbox.grid(row=5, column=0, columnspan=4, **pad)
@@ -330,7 +339,17 @@ def build_wood_tab(parent):
             time.sleep(random.uniform(0.03, 0.06))
             inp.mouse(AF.MOUSEEVENTF_LEFTUP)
 
+        def pace():
+            """Пауза перед кликом в мини-игре - по скорости из настроек. False - бота выключили."""
+            end = last_hit[0] + random.uniform(0.85, 1.15) / max(0.5, cfg["mini_cps"])
+            while time.time() < end:
+                if ctl["quit"] or not ctl["active"]:
+                    return False
+                time.sleep(0.01)
+            return True
+
         prev = was = False
+        last_hit = [0.0]            # когда был последний клик в мини-игре
         phase_prev = None
         next_click = 0.0
         tries = []                  # [(x, y, попыток)] - ветки в этой мини-игре, по которым уже кликали
@@ -376,6 +395,7 @@ def build_wood_tab(parent):
                     log("Рубка: кликаю")
                 elif ph == "mini":
                     tries, skip = [], []
+                    last_hit[0] = now
                     mini_t0 = now
                     mini_n0 = 0
                     log("Мини-игра: убираю ветки")
@@ -418,10 +438,13 @@ def build_wood_tab(parent):
                         log(f"Ветка у {t[0]},{t[1]} не убирается - пропускаю")
                         continue
                     target = b["aims"][t[2] % len(b["aims"])]                # каждая попытка - другое место ветки
+                    if not pace():
+                        break
                     stats["view"]["t"] = target
                     inp.move_to(*to_screen(target))
                     time.sleep(0.03)
                     lclick()
+                    last_hit[0] = time.time()
                     t[2] += 1
                     stats["clicks"] += 1
                     clicked.append(t)
