@@ -3,16 +3,19 @@
 Бот для мини-игры "швейная машинка" (Majestic RP, ателье). Версия 3.
 
 Механика (замерено по твоим видео):
-  - игла стоит на месте, ткань едет вверх: ~25 px/с на зелёной иконке,
-    ~220 px/с на красной;
-  - A / D крутят ткань вокруг иглы ~105 градусов в секунду (и когда стоит);
-  - Space разгоняет медленно (до красного ~6 с), отпущенный тормозит быстро;
+  - игла стоит на месте, ткань едет вверх: ~22 px/с на зелёной иконке,
+    ~173 px/с на красной (уточнено по записи 20261019_180248, 9 комплектов);
+  - A / D крутят ткань вокруг иглы тем быстрее, чем быстрее едет ткань:
+    ~58 град/с на месте, ~102 на красной;
+  - Space разгоняет медленно (иконка +0,144 в секунду, до красного ~7 с),
+    отпущенный тормозит в 4 раза быстрее (-0,62 в секунду);
   - прошитые штрихи перечёркнуты серой ниткой, непрошитые чисто белые.
 
 Как работает:
   - идёт вдоль линии по штрихам и видит её на ~300 px вперёд, включая
     U-развороты;
-  - рулит по смещению и наклону линии прямо у иглы, углы не срезает;
+  - рулит по смещению и наклону линии прямо у иглы; A/D нажимает ровно на
+    нужный угол (короткие нажатия с учётом задержки), без дёрганья туда-сюда;
   - на прямых разгоняется до красного, тормозит только перед крутым
     поворотом и ровно настолько, насколько нужно;
   - ПАМЯТЬ: помнит, куда идёт линия, и поворачивает эту память вместе с
@@ -49,18 +52,19 @@ HINT_BOXES = [(1610, 1032, 1636, 1058),   # A
 E_BOX = (104, 29, 130, 55)
 
 OFFSET_GAIN_L = 28.0      # px: насколько резко подтягиваться к линии сбоку
-FEEDFORWARD_T = 0.12      # с: упреждение поворота по кривизне
+FEEDFORWARD_T = 0.25      # с: упреждение поворота по кривизне
 
 TURN_SIGN = -1            # -1: A уменьшает угол, D увеличивает
-OMEGA = 105.0             # градусов/с - скорость поворота ткани
-LATENCY = 0.04            # с - задержка картинки (учитывается при повороте)
-DEADZONE = 3.0
+OMEGA0, OMEGA1 = 57.7, 44.0   # град/с: поворот ткани = OMEGA0 + OMEGA1*скорость (0..1), замерено по записи
+LAT_VIS = 0.02            # с: задержка от нажатия до снимка сверх шага цикла (подобрано на виртуальной швейке)
+MIN_TURN = 1.0            # град: меньше - не крутим
+K_TURN = 1.3              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха)
 
 # скорость машинки (0 = зелёная иконка, 1 = красная)
 SPEED_MAX = 1.00          # максимум на прямой
 RECOVER_SPEED = 0.40      # с какой скоростью подшиваться обратно к линии
-TURN_RATE_SAFE = 90.0     # град/с - какой поворот бот успевает отрулить
-BRAKE = 140.0             # px/с^2 - торможение машинки
+ACCEL, DECEL = 0.144, 0.62  # скорость (0..1) за секунду: разгон с газом, торможение без газа
+V0_PX, V1_PX = 22.0, 151.0  # px/с: скорость ткани = V0_PX + V1_PX*скорость
 STOP_ANGLE = 55.0         # линия настолько сбоку - сначала довернуть на месте
 
 STALL_TIME = 0.4          # с: стоим и не крутим дольше - всё равно едем
@@ -68,12 +72,11 @@ ONLINE_DIST = 48          # px: ближе этого есть непрошит�
 MAX_JUMP = 75             # град: на сколько может прыгнуть направление за кадр
 
 AUTO_REPEAT = True
-E_DELAY = 1.5
-E_RETRY = 4.0
+E_DELAY = 0.45            # с после закрытия игры (подсказка E появляется через ~0,27 с)
+E_RETRY = 2.0
 E_MAX_TRIES = 5
 
-LOOP_DELAY = 0.003
-UI_CHECK = 0.05
+UI_CHECK = 0.15           # с: как часто проверять подсказки внизу (лишние снимки замедляют цикл)
 
 # ================================================================ ввод
 SC_A, SC_D, SC_SPACE, SC_E = 0x1E, 0x20, 0x39, 0x12
@@ -113,8 +116,10 @@ KEYEVENTF_SCANCODE, KEYEVENTF_KEYUP = 0x0008, 0x0002
 
 class Keys:
     def __init__(self, dry=False):
+        import threading
         self.down = set()
         self.live = (sys.platform == "win32") and not dry
+        self.lock = threading.Lock()          # отпускание по таймеру идёт из другого потока
 
     def _send(self, sc, up):
         if not self.live:
@@ -127,12 +132,29 @@ class Keys:
         ctypes.windll.user32.SendInput(1, ctypes.pointer(x), ctypes.sizeof(x))
 
     def set(self, sc, pressed):
-        if pressed and sc not in self.down:
-            self._send(sc, False)
-            self.down.add(sc)
-        elif not pressed and sc in self.down:
-            self._send(sc, True)
-            self.down.discard(sc)
+        with self.lock:
+            if pressed and sc not in self.down:
+                self._send(sc, False)
+                self.down.add(sc)
+            elif not pressed and sc in self.down:
+                self._send(sc, True)
+                self.down.discard(sc)
+
+    def pulse(self, sc, dur):
+        """Нажать и отпустить через dur секунд (не дожидаясь); новое нажатие отменяет старое отпускание."""
+        self.gen = getattr(self, "gen", 0) + 1
+        g = self.gen
+        self.set(sc, True)
+        if not self.live:
+            return
+
+        def release():
+            if self.gen == g:
+                self.set(sc, False)
+        import threading
+        t = threading.Timer(dur, release)
+        t.daemon = True
+        t.start()
 
     def tap(self, sc, hold=0.06):
         self.set(sc, True)
@@ -197,36 +219,39 @@ def masks(grid, cx, cy, g):
     mn = cv2.min(cv2.min(c0, c1), c2)
     mx = cv2.max(cv2.max(c0, c1), c2)
     spread = cv2.subtract(mx, mn)
-    W = ((mn > 200) & (spread < 40)).astype(np.uint8)
+    # маски 0/1 (uint8) операциями OpenCV - в несколько раз быстрее, чем через numpy
+    W = cv2.bitwise_and(cv2.compare(mn, 200, cv2.CMP_GT), cv2.compare(spread, 40, cv2.CMP_LT)) // 255
     b = g.border
     W[:, :b] = 0
     W[:, -b:] = 0
-    inside = cv2.morphologyEx(W, cv2.MORPH_CLOSE, K5) & (1 - W)     # нитка по штриху
-    grey = ((mn > 108) & (mx < 200) & (spread < 22)).astype(np.uint8)
-    thread = (inside | (grey & (1 - cv2.dilate(W, ONES5)))).astype(np.uint8)  # нитка по фону
+    inside = cv2.subtract(cv2.morphologyEx(W, cv2.MORPH_CLOSE, K5), W)       # нитка по штриху
+    grey = cv2.compare(mn, 108, cv2.CMP_GT)
+    grey = cv2.bitwise_and(grey, cv2.compare(mx, 200, cv2.CMP_LT))
+    grey = cv2.bitwise_and(grey, cv2.compare(spread, 22, cv2.CMP_LT)) // 255
+    thread = cv2.bitwise_or(inside, cv2.subtract(grey, cv2.dilate(W, ONES5)))  # нитка по фону
     thread[:, :b] = 0
     thread[:, -b:] = 0
     n, lab, stats, _ = cv2.connectedComponentsWithStats(thread, connectivity=8)
-    keep = np.zeros(n, bool)
+    keep = np.zeros(n, np.uint8)
     keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= g.min_thread
-    thread = keep[lab].astype(np.uint8)
+    thread = keep[lab]
     cv2.circle(thread, (cx, cy), g.needle_r, 1, -1)
     dist = cv2.distanceTransform(1 - thread, cv2.DIST_L2, 3)
-    sewn_px = W.astype(bool) & (dist <= g.sew_r)
+    sewn = cv2.bitwise_and(W, cv2.compare(dist, float(g.sew_r), cv2.CMP_LE) // 255)
     # штрих, который заметно задет ниткой, считаем прошитым целиком
     # (кроме штриха под самой иглой - у него прошита только задняя часть)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(W, connectivity=8)
+    U = cv2.subtract(W, sewn)
     if n > 1:
-        frac = np.bincount(lab[sewn_px], minlength=n) / np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
+        frac = np.bincount(lab[sewn > 0], minlength=n) / np.maximum(stats[:, cv2.CC_STAT_AREA], 1)
         whole = frac > 0.3
         whole[0] = False
         r = g.needle_r + int(6 * g.s)
         under = np.unique(lab[max(0, cy - r):cy + r, max(0, cx - r):cx + r])
         whole[under] = False
-        U = W.astype(bool) & ~sewn_px & ~whole[lab]
-    else:
-        U = W.astype(bool) & ~sewn_px
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(U.astype(np.uint8), connectivity=8)
+        if whole.any():
+            U[whole[lab]] = 0
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(U, connectivity=8)
     area = stats[:, cv2.CC_STAT_AREA].copy()
     area[0] = 0
     keep = area >= g.min_blob
@@ -401,11 +426,25 @@ def analyze(img, g, off):
 
 # ================================================================ управление
 def px_speed(s):
-    return 25.0 + 195.0 * s
+    return V0_PX + V1_PX * s
 
 
 def speed_from_px(v):
-    return (v - 25.0) / 195.0
+    return (v - V0_PX) / V1_PX
+
+
+def omega(s):
+    return OMEGA0 + OMEGA1 * (s or 0.0)
+
+
+def curve_speed(k):
+    """Наибольшая скорость (0..1), на которой поворот ткани успевает за изгибом с кривизной k (1/px)."""
+    kd = math.degrees(abs(k))
+    a = V1_PX * kd - K_TURN * OMEGA1
+    b = K_TURN * OMEGA0 - V0_PX * kd
+    if a <= 0:
+        return 1.0 if b >= 0 else 0.0
+    return float(np.clip(b / a, 0.0, 1.0))
 
 
 class Controller:
@@ -421,6 +460,10 @@ class Controller:
         self.heading = None      # направление линии у иглы
         self.road = None         # куда линия идёт дальше
         self.rot = 0             # +1 угол растёт, -1 уменьшается, 0 не крутим
+        self.cmds = []           # [(начало, длительность, знак, град/с)] - поданные повороты
+        self.last_cmd = (0, 0.0)
+        self.loop_dt = 0.05
+        self.last_apply = None
         self.last_t = None
         self.mode = "start"
         self.lost_t = None
@@ -428,28 +471,33 @@ class Controller:
         self.trace_dbg = []
         self.keys.release_all()
 
+    def _turned(self, t0, t1):
+        """На сколько градусов (со знаком) повернулась ткань по поданным командам за [t0, t1]."""
+        tot = 0.0
+        for ts, d, sg, w in self.cmds:
+            a, b = max(t0, ts), min(t1, ts + d)
+            if b > a:
+                tot += sg * w * (b - a)
+        return tot
+
     def _rotate_memory(self, now):
         if self.last_t is not None:
-            dt = min(0.1, now - self.last_t)
-            delta = self.rot * OMEGA * dt
+            delta = self._turned(self.last_t, now)
             if self.heading is not None:
                 self.heading = angdiff(self.heading + delta, 0)
             if self.road is not None:
                 self.road = angdiff(self.road + delta, 0)
         self.last_t = now
 
-    def _target_speed_follow(self, err, kappa, path):
+    def _target_speed_follow(self, err, kappa, path, s_now):
         """path: [(дистанция по линии px, кривизна 1/px)] впереди."""
-        w = math.radians(TURN_RATE_SAFE)
-        v = px_speed(SPEED_MAX)
-        if abs(kappa) > 1e-4:
-            v = min(v, w / abs(kappa))
+        brake = V1_PX * DECEL
+        v = px_speed(min(SPEED_MAX, curve_speed(kappa)))
         for dist, k in path:            # успеть оттормозиться до поворота
-            if abs(k) > 1e-4:
-                v = min(v, math.sqrt((w / abs(k)) ** 2 + 2 * BRAKE * dist))
+            v = min(v, math.sqrt(px_speed(curve_speed(k)) ** 2 + 2 * brake * dist / self.g.s))
         err = abs(err)
         if err > 1:
-            v = min(v, 45 * self.g.s * OMEGA / err)
+            v = min(v, 45 * self.g.s * omega(s_now) / err)
         if err > STOP_ANGLE:
             return 0.0
         return float(np.clip(speed_from_px(v), 0.0, SPEED_MAX))
@@ -502,7 +550,7 @@ class Controller:
                     path.append((dist, k))
             v_now = px_speed(st["speed"]) if st["speed"] is not None else 0.0
             err = theta + math.degrees(math.atan2(e, OFFSET_GAIN_L * g.s))
-            err += math.degrees(kappa * v_now * FEEDFORWARD_T)
+            err += math.degrees(kappa * v_now * FEEDFORWARD_T * self.g.s)
             err = angdiff(err, 0)
             self.heading = a0
             # память: направление линии (касательная) в ~80 px впереди
@@ -517,7 +565,7 @@ class Controller:
             self.mode = "follow"
             self.lost_t = None
             self.trace_dbg = fwd
-            target = self._target_speed_follow(err, kappa, path)
+            target = self._target_speed_follow(err, kappa, path, st["speed"] or 0.0)
             return "follow", err, target, (theta, self.road, None)
 
         tgt = self._pick_recovery(st)
@@ -540,19 +588,31 @@ class Controller:
 
     def apply(self, st, now=None):
         now = time.time() if now is None else now
+        if self.last_apply is not None:
+            self.loop_dt += (float(np.clip(now - self.last_apply, 0.01, 0.15)) - self.loop_dt) * 0.2
+        self.last_apply = now
         mode, err, target, dbg = self.decide(st, now)
-        # с учётом задержки: если уже крутим, угол ещё немного уйдёт
-        err_eff = err + self.rot * OMEGA * LATENCY
-        if err_eff < -DEADZONE:
-            self.rot = 1
-        elif err_eff > DEADZONE:
-            self.rot = -1
-        else:
-            self.rot = 0
+        # поворот, который уже подан, но ещё не виден на снимке (задержка), - как будто уже случился
+        self.cmds = [c for c in self.cmds if c[0] + c[1] > now - 1.0]
+        err_eff = err + self._turned(now - self.loop_dt - LAT_VIS, now + 1.0)
+        need = -err_eff
+        w = omega(st["speed"])
         inc_key = SC_A if self.turn_sign == 1 else SC_D
         dec_key = SC_D if self.turn_sign == 1 else SC_A
-        self.keys.set(inc_key, self.rot == 1)
-        self.keys.set(dec_key, self.rot == -1)
+        if abs(need) < MIN_TURN:
+            self.rot = 0
+            self.last_cmd = (0, 0.0)
+            self.keys.set(inc_key, False)
+            self.keys.set(dec_key, False)
+        else:
+            # нажатие ровно на нужный угол, но не дольше шага цикла (дальше решит следующий снимок)
+            self.rot = 1 if need > 0 else -1
+            dur = min(abs(need) / w, self.loop_dt * 1.1)
+            self.cmds = [(ts, min(d, now - ts), sg, ww) for ts, d, sg, ww in self.cmds]   # прошлое нажатие отменяется
+            self.cmds.append((now, dur, self.rot, w))
+            self.last_cmd = (self.rot, dur)
+            self.keys.set(dec_key if self.rot == 1 else inc_key, False)
+            self.keys.pulse(inc_key if self.rot == 1 else dec_key, dur)
         # защита от зависания: если ничего не крутим и стоим - чуть-чуть едем
         if self.rot == 0 and target <= 0:
             if self.idle_t is None:
@@ -644,6 +704,10 @@ class Bot:
         last_progress = 0.0
         last_mode = None
         try:
+            ctypes.windll.winmm.timeBeginPeriod(1)    # точные короткие нажатия A/D (таймер Windows иначе ~15 мс)
+        except Exception:
+            pass
+        try:
             while not ctrl.quit:
                 if not switches.is_on("bot"):
                     ctrl.active = False
@@ -683,15 +747,15 @@ class Bot:
                         in_game = True
                         e_tries = 0
                         self.ctl.reset()
-                        time.sleep(0.3)
                     st = self.read()
                     last_progress = st["progress"]
+                    if last_progress > 0.97:
+                        last_ui = 0.0                     # комплект дошит - сразу проверить, не закрылась ли игра
                     mode = self.ctl.apply(st)[0]
                     if mode != last_mode and mode in ("recover", "search"):
                         log("  вылетел с линии, возвращаюсь" if mode == "recover"
                             else "  линии не видно, ищу")
                     last_mode = mode
-                    time.sleep(LOOP_DELAY)
                     continue
 
                 if in_game:
@@ -718,7 +782,12 @@ class Bot:
                 time.sleep(0.05)
         finally:
             BUSY["on"] = False
+            self.keys.gen = getattr(self.keys, "gen", 0) + 1     # отменить отложенные отпускания
             self.keys.release_all()
+            try:
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
 
     def debug_shot(self):
         img, off = self.grab((0, 0, self.mon["width"], self.mon["height"]))
