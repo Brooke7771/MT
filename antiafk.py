@@ -1101,6 +1101,8 @@ def build_antiafk_tab(parent):
                 fishing_busy = fishing_busy or woodcut.BUSY["on"]
                 import mining
                 fishing_busy = fishing_busy or mining.BUSY["on"]
+                import gym
+                fishing_busy = fishing_busy or gym.BUSY["on"]
             except Exception:
                 pass
             if SEWING_BUSY["on"] or fishing_busy:

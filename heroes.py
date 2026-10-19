@@ -862,6 +862,52 @@ class MineHero(Hero):
                           (d.get("life") or {}).get("count"))
 
 
+class GymHero(Hero):
+    H = 150
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        act, state = bool(d.get("active")), d.get("state")
+        # --- кружок с буквой, которую видит бот, и 4 кружка подхода
+        rw = 214
+        self.card(0, rw, fill="#1a130d", outline="#40301f")
+        cx, cy = rw / 2, 62
+        L = d.get("letter")
+        if state == "key" and L:
+            r = 34 + 2 * abs((t * 3) % 2 - 1)
+            self.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#f2f2f2", outline="#ff8c42", width=2)
+            self.text(cx, cy, L, 22, True, "#111111", "center")
+        elif state == "prompt":
+            _rrect(self, cx - 20, cy - 20, cx + 20, cy + 20, 8, fill="#ff8c42", outline="")
+            self.text(cx, cy, "E", 16, True, "#ffffff", "center")
+        else:
+            self.create_oval(cx - 34, cy - 34, cx + 34, cy + 34, fill="", outline="#40301f", width=2)
+            self.text(cx, cy, "жду тренажёр" if act else "выключено", 9, True, T.MUTED, "center")
+        stage = int(d.get("stage") or 0)
+        for i in range(4):
+            x = cx - 39 + i * 26
+            self.create_oval(x - 6, H - 30, x + 6, H - 18, fill="#ff8c42" if i < stage else "#40301f", outline="")
+        # --- состояние
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Качалка")
+        self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        cells = [("Буква", L if state == "key" and L else "—"), ("Пауза перед буквой", f"{float(d.get('react') or 0):g} с"),
+                 ("Мимо", str(d.get("miss") or 0)), ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, "Подходов", [("Букв", str(self.shown("Букв"))), ("В час", f"{self.rate}")],
+                          (d.get("life") or {}).get("count"))
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
           "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero,
-          "mine": MineHero}
+          "mine": MineHero, "gym": GymHero}

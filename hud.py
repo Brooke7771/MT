@@ -18,10 +18,10 @@ KEY = "#010203"
 CARD = "#13131a"
 EDGE = "#262630"
 TRACK = "#0b0b10"
-ORDER = ["fish", "bot", "wood", "mine", "afk", "sand"]
-TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта"}
-GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏"}
-COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff"}
+ORDER = ["fish", "bot", "wood", "mine", "gym", "afk", "sand"]
+TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏", "gym": "✊"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff", "gym": "#ff8c42"}
 WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
 CW, CH, GAP = 284, 92, 10
@@ -216,7 +216,7 @@ class Hud:
         t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
         items = dict(d.get("items", []))
-        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней"}[key]
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов"}[key]
         val = items.get(main_label, 0)
         c["num"] += (val - c["num"]) * 0.25
         if int(val) != c["last"]:
@@ -291,6 +291,16 @@ class Hud:
             self._bar(X(16), X(230), ry, c["prog"], mix(ac, "#ffffff", 0.3 * pf), 9)
             txt = {"mini": f"{n_left} руды", "dig": "добыча"}.get(d.get("state"), "жду камень")
             self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
+        elif key == "gym":
+            stage = int(d.get("stage") or 0)                # кружков пройдено в подходе (из 4)
+            for i in range(4):
+                cx = X(24 + i * 34)
+                cv.create_oval(cx - 6, ry - 6, cx + 6, ry + 6, fill=ac if i < stage else EDGE, outline="")
+            L = d.get("letter")
+            if L:
+                self._key(X(180), ry, L, True, ac)
+            txt = {"key": "буква", "prompt": "жму E", "set": "подход"}.get(d.get("state"), "жду тренажёр")
+            self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
         else:
             left, span = d.get("left", 0.0), max(1.0, d.get("span", 1.0))
             frac = min(1.0, max(0.0, 1 - left / span))
@@ -301,7 +311,7 @@ class Hud:
         by = y0 + CH - 17
         self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
         num = str(int(round(c["num"])))
-        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней"}[key]
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов"}[key]
         right = X(CW - 14)
         tail = f" {unit}{rate}"
         self._txt(right, by, tail, 8, False, T.MUTED, "e")
