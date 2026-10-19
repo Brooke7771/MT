@@ -27,7 +27,8 @@ def _lerp(a, b, k):
 class Sidebar(tk.Canvas):
     GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "wood", "mine", "gym", "farm", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
               ("СИСТЕМА", ["rec", "admin"])]
-    ITEM_H, GAP, TOP = 42, 4, 98
+    ITEM_H, GAP, TOP = 42, 4, 86
+    KEY_H = 92                  # карточка ключа внизу (с отступами)
 
     def __init__(self, parent, on_select, on_toggle, get_toggle, switchable):
         super().__init__(parent, width=SIDE_W, bg=T.SIDEBAR, highlightthickness=0, bd=0)
@@ -46,7 +47,9 @@ class Sidebar(tk.Canvas):
         self.bind("<Leave>", lambda e: self._set_hover(None))
         self.bind("<Button-1>", self._click)
         self.bind("<Configure>", lambda e: self._layout())
+        self.bind("<MouseWheel>", self._wheel)
         self.ih = self.ITEM_H
+        self.scroll, self.max_scroll = 0.0, 0.0
         self._loop()
 
     # ---- данные
@@ -64,14 +67,17 @@ class Sidebar(tk.Canvas):
         n_items = sum(len(ks) for _, ks in groups)
         n_heads = sum(1 for t, _ in groups if t)
         H = self.winfo_height()
-        room = (H if H > 50 else 2000) - 82 - 10 - self.TOP
+        room = (H if H > 50 else 2000) - self.KEY_H - self.TOP
         ih, gap, head, sep = self.ITEM_H, self.GAP, 28, 8
         need = lambda: n_items * (ih + gap) + n_heads * head + len(groups) * sep
-        while need() > room and ih > 30:
+        while need() > room and ih > 28:
             ih -= 1
             head = max(20, head - 1)
             sep = max(2, sep - 1)
             gap = 2 if ih < 38 else gap
+        # всё равно не влезает (маленькое окно) - пункты листаются колёсиком
+        self.max_scroll = float(max(0, need() - room))
+        self.scroll = min(self.scroll, self.max_scroll)
         self.ih = ih
         rows, y = [], self.TOP
         for title, ks in groups:
@@ -95,13 +101,25 @@ class Sidebar(tk.Canvas):
     def _y(self, key):
         for kind, k, y in self.rows:
             if kind == "item" and k == key:
-                return y
+                return y - self.scroll
         return None
+
+    def _wheel(self, e):
+        if self.max_scroll <= 0:
+            return
+        self.scroll = min(self.max_scroll, max(0.0, self.scroll - e.delta / 120 * 40))
+        self.sel_y = self._y(self.sel) if self.sel is not None else None
+        self._draw()
+
+    def _visible(self, y):
+        """Пункт (верх y на экране) целиком виден: не под логотипом и не под карточкой ключа."""
+        return self.TOP - 4 <= y and y + self.ih <= self.winfo_height() - self.KEY_H + 4
 
     # ---- мышь
     def _hit(self, e):
         for kind, k, y in self.rows:
-            if kind == "item" and y <= e.y <= y + self.ih and 10 <= e.x <= SIDE_W - 10:
+            y -= self.scroll
+            if kind == "item" and self._visible(y) and y <= e.y <= y + self.ih and 10 <= e.x <= SIDE_W - 10:
                 return k, (k in self.switchable and e.x >= SIDE_W - 66)
         H = self.winfo_height()
         if H - 82 <= e.y <= H - 12 and 12 <= e.x <= SIDE_W - 12:
@@ -170,16 +188,21 @@ class Sidebar(tk.Canvas):
         self.create_text(35, 40, text="M", fill="#ffffff", font=("Segoe UI", 16, "bold"))
         self.create_text(64, 31, text="Majestic", anchor="w", fill=T.TEXT, font=("Segoe UI", 14, "bold"))
         self.create_text(65, 50, text="T  O  O  L  S", anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
-        self.create_line(18, 76, W - 18, 76, fill=EDGE)
+        self.create_line(18, 72, W - 18, 72, fill=EDGE)
         # выделение (скользит между пунктами)
-        if self.sel is not None and self.sel_y is not None and self._y(self.sel) is not None:
+        if self.sel is not None and self.sel_y is not None and self._y(self.sel) is not None \
+                and self._visible(self.sel_y):
             y = self.sel_y
             glow = 0.62 + 0.1 * math.sin(t * 2)
             _rrect(self, 10, y, W - 10, y + self.ih, 11, fill="#1d1017", outline=mix(T.ACCENT, T.SIDEBAR, glow))
             _rrect(self, 10, y + 10, 14, y + self.ih - 10, 2, fill=T.ACCENT, outline="")
         for kind, k, y in self.rows:
+            y -= self.scroll
             if kind == "head":
-                self.create_text(24, y + 14, text=k, anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
+                if self._visible(y):
+                    self.create_text(24, y + 12, text=k, anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
+                continue
+            if not self._visible(y):
                 continue
             glyph, name = self.meta[k]
             on = k == self.sel
@@ -199,6 +222,12 @@ class Sidebar(tk.Canvas):
                        outline=mix(EDGE, "#2fb865", g))
                 kx = _lerp(x0 + 9, x1 - 9, g)
                 self.create_oval(kx - 6, cy - 6, kx + 6, cy + 6, fill=mix("#8c8c99", "#ffffff", g), outline="")
+        # пункты не влезли - подсказка, что меню листается
+        if self.max_scroll > 0:
+            if self.scroll < self.max_scroll - 1:
+                self.create_text(W / 2, H - self.KEY_H + 6, text="⌄", fill=DIM, font=("Segoe UI", 10, "bold"))
+            if self.scroll > 1:
+                self.create_text(W / 2, self.TOP - 6, text="⌃", fill=DIM, font=("Segoe UI", 10, "bold"))
         # карточка ключа внизу
         title, sub, ok = self.status
         y1 = H - 12

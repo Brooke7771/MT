@@ -117,10 +117,11 @@ def main():
     title_lbl.pack(anchor="w")
     sub_lbl = tk.Label(header, text="", bg=T.BG, fg=T.MUTED, font=T.FONT, anchor="w")
     sub_lbl.pack(anchor="w")
-    line_box = tk.Frame(main_area, bg=T.BORDER, height=2)
-    line_box.pack(fill="x", padx=22, pady=(10, 10))
+    line_box = tk.Frame(main_area, bg=T.BG, height=3)
+    line_box.pack(fill="x", padx=22, pady=(10, 12))
+    tk.Frame(line_box, bg=T.BORDER, height=1).place(relx=0, rely=0.5, relwidth=1, anchor="w")
     line_acc = tk.Frame(line_box, bg=T.ACCENT)
-    line_acc.place(relx=0, rely=0, relwidth=1, relheight=1)
+    line_acc.place(x=0, y=0, width=64, relheight=1)
 
     holder = ttk.Frame(main_area)
     holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
@@ -169,7 +170,7 @@ def main():
             root.update()
             # страницу целиком не двигаем (тяжёлые перерисовывались по 60-110 мс на кадр):
             # анимируются только лёгкие элементы - линия, заголовок и «въезд» блоков на Canvas
-            widgets.tween(root, "line", lambda t: line_acc.place(relx=0, rely=0, relwidth=t, relheight=1), 300)
+            widgets.tween(root, "line", lambda t: line_acc.place(x=0, y=0, width=max(1, int(64 * t)), relheight=1), 300)
             widgets.tween(root, "title", lambda t: (title_lbl.configure(fg=widgets.mix(T.BG, T.TEXT, t)),
                                                     sub_lbl.configure(fg=widgets.mix(T.BG, T.MUTED, t))), 220)
 
@@ -400,6 +401,8 @@ def main():
     top_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(foot, text="Поверх окон", variable=top_var, style="Side.TCheckbutton",
                     command=lambda: root.attributes("-topmost", top_var.get())).pack(anchor="w", pady=1)
+    hud_row = tk.Frame(foot, bg=T.SIDEBAR)
+    hud_row.pack(fill="x")
     import hud as _hud
     hud = _hud.Hud(root, dash)
     hud.set_side(ui_cfg.get("hud_side", "right"))
@@ -414,23 +417,27 @@ def main():
         except Exception:
             pass
 
-    ttk.Checkbutton(foot, text="HUD поверх игры", variable=hud_var, style="Side.TCheckbutton",
-                    command=lambda: (hud.set_enabled(hud_var.get()), save_ui())).pack(anchor="w", pady=1)
+    ttk.Checkbutton(hud_row, text="HUD поверх игры", variable=hud_var, style="Side.TCheckbutton",
+                    command=lambda: (hud.set_enabled(hud_var.get()), save_ui())).pack(side="left", pady=1)
     side_var = tk.StringVar()
 
     def paint_side():
-        side_var.set("      положение HUD: " + ("справа" if hud.side == "right" else "слева"))
+        side_var.set(("справа" if hud.side == "right" else "слева") + " ⇄")
     paint_side()
-    side_lbl = tk.Label(foot, textvariable=side_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 8),
+    side_lbl = tk.Label(hud_row, textvariable=side_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 8),
                         cursor="hand2")
-    side_lbl.pack(anchor="w")
+    side_lbl.pack(side="right")
+    side_lbl.bind("<Enter>", lambda e: side_lbl.configure(fg=T.TEXT))
+    side_lbl.bind("<Leave>", lambda e: side_lbl.configure(fg=T.MUTED))
     side_lbl.bind("<Button-1>", lambda e: (hud.set_side("left" if hud.side == "right" else "right"),
                                            paint_side(), save_ui()))
+    upd_row = tk.Frame(foot, bg=T.SIDEBAR)
+    upd_row.pack(fill="x", pady=(8, 0))
+    btn = ttk.Button(upd_row, text="Обновить", style="Side.TButton")
+    btn.pack(side="right")
     upd_var = tk.StringVar(value=f"Версия {__version__}")
-    tk.Label(foot, textvariable=upd_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 9),
-             wraplength=200, justify="left").pack(anchor="w", pady=(8, 6))
-    btn = ttk.Button(foot, text="Проверить обновления")
-    btn.pack(fill="x")
+    tk.Label(upd_row, textvariable=upd_var, bg=T.SIDEBAR, fg=T.MUTED, font=("Segoe UI", 8),
+             wraplength=110, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
 
     ui = queue.Queue()            # результаты из фоновых потоков -> в окно
 

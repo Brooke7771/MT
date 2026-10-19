@@ -539,7 +539,7 @@ def build_antiafk_tab(parent):
 
     pad = {"padx": 6, "pady": 3}
     parent.columnconfigure(0, weight=1)
-    parent.columnconfigure(1, weight=1)
+    parent.rowconfigure(1, weight=1)
 
     def persist():
         save_config(cfg)
@@ -550,55 +550,63 @@ def build_antiafk_tab(parent):
         except Exception:
             return d
 
-    # ================================================================ левая колонка: нажатия
+    # ================================================================ сверху: старт и общее
     L = ttk.Frame(parent)
-    L.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    L.grid(row=0, column=0, sticky="ew")
+    # ниже - вкладки: пресет нажатий, еда и вода, инвентарь, журнал (всё сразу не влезало в окно)
+    nb = ttk.Notebook(parent)
+    nb.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+    pf, R, invt, lg = (ttk.Frame(nb, padding=(8, 4)) for _ in range(4))
+    for fr_, name in ((pf, "Пресет нажатий"), (R, "Еда и вода"), (invt, "Инвентарь"), (lg, "Журнал")):
+        nb.add(fr_, text=name)
     status_var = tk.StringVar(value="Выключен")
     status_lbl = ttk.Label(L, textvariable=status_var, style="Status.TLabel")
     status_lbl.grid(row=0, column=0, columnspan=4, sticky="w", **pad)
     info_var = tk.StringVar(value="")
     ttk.Label(L, textvariable=info_var, style="Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", **pad)
-    ttk.Button(L, text="Старт / стоп", style="Accent.TButton", command=lambda: toggle()).grid(
+    ttk.Button(L, text="Старт / стоп", style="Accent.TButton", width=30, command=lambda: toggle()).grid(
         row=2, column=0, columnspan=4, sticky="ew", **pad)
+    rt = ttk.Frame(L)
+    rt.grid(row=0, column=4, rowspan=3, sticky="nw", padx=(24, 0))
 
     key_var = tk.StringVar(value=vk_name(cfg["toggle_vk"]))
-    ttk.Label(L, text="Горячая клавиша:").grid(row=3, column=0, sticky="w", **pad)
-    ttk.Label(L, textvariable=key_var, style="Key.TLabel", width=16).grid(row=3, column=1, sticky="w", **pad)
-    ttk.Button(L, text="Назначить", command=lambda: bind_key()).grid(row=3, column=2, sticky="w", **pad)
+    ttk.Label(rt, text="Горячая клавиша:").grid(row=0, column=0, sticky="w", **pad)
+    ttk.Label(rt, textvariable=key_var, style="Key.TLabel", width=12).grid(row=0, column=1, sticky="w", **pad)
+    ttk.Button(rt, text="Назначить", command=lambda: bind_key()).grid(row=0, column=2, sticky="w", **pad)
 
     focus_var = tk.BooleanVar(value=cfg["focus_only"])
     titles_var = tk.StringVar(value=cfg["window_titles"])
-    ttk.Checkbutton(L, text="Только когда активно окно игры:", variable=focus_var,
-                    command=lambda: save_misc()).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
-    e = ttk.Entry(L, textvariable=titles_var, width=30)
-    e.grid(row=4, column=2, columnspan=2, sticky="ew", **pad)
+    ttk.Checkbutton(rt, text="Только когда активно окно игры:", variable=focus_var,
+                    command=lambda: save_misc()).grid(row=1, column=0, columnspan=2, sticky="w", **pad)
+    e = ttk.Entry(rt, textvariable=titles_var, width=18)
+    e.grid(row=1, column=2, sticky="ew", **pad)
     e.bind("<FocusOut>", lambda ev: save_misc())
     overlay_var = tk.BooleanVar(value=cfg["overlay"])
     tg_var = tk.BooleanVar(value=cfg["telegram"])
-    ttk.Checkbutton(L, text="Показывать статус поверх игры", variable=overlay_var,
+    ttk.Checkbutton(rt, text="Показывать статус поверх игры", variable=overlay_var,
                     command=lambda: (save_misc(), overlay_update(force=True))).grid(
-        row=5, column=0, columnspan=2, sticky="w", **pad)
-    ttk.Checkbutton(L, text="Сообщать в Telegram о еде/воде", variable=tg_var,
-                    command=lambda: save_misc()).grid(row=5, column=2, columnspan=2, sticky="w", **pad)
+        row=2, column=0, columnspan=3, sticky="w", **pad)
+    ttk.Checkbutton(rt, text="Сообщать в Telegram о еде/воде", variable=tg_var,
+                    command=lambda: save_misc()).grid(row=3, column=0, columnspan=3, sticky="w", **pad)
 
-    pf = ttk.LabelFrame(L, text="Пресет нажатий")
-    pf.grid(row=6, column=0, columnspan=4, sticky="nsew", **pad)
     preset_var = tk.StringVar(value=cfg["preset_name"])
     pcb = ttk.Combobox(pf, textvariable=preset_var, state="readonly", width=24)
     pcb.grid(row=0, column=0, columnspan=2, sticky="w", **pad)
     ttk.Button(pf, text="Сохранить как...", command=lambda: save_preset()).grid(row=0, column=2, **pad)
     ttk.Button(pf, text="Удалить", command=lambda: delete_preset()).grid(row=0, column=3, **pad)
 
+    opt = ttk.Frame(pf)
+    opt.grid(row=0, column=4, rowspan=4, sticky="nw", padx=(18, 0))
     lo_var, hi_var = tk.StringVar(), tk.StringVar()
-    ir = ttk.Frame(pf)
-    ir.grid(row=1, column=0, columnspan=4, sticky="w", **pad)
+    ir = ttk.Frame(opt)
+    ir.grid(row=3, column=0, columnspan=4, sticky="w", **pad)
     ttk.Label(ir, text="Нажатие каждые").pack(side="left")
     ttk.Spinbox(ir, from_=1, to=3600, width=5, textvariable=lo_var, command=lambda: save_preset_fields()).pack(side="left", padx=4)
     ttk.Label(ir, text="–").pack(side="left")
     ttk.Spinbox(ir, from_=1, to=3600, width=5, textvariable=hi_var, command=lambda: save_preset_fields()).pack(side="left", padx=4)
-    ttk.Label(ir, text="сек (случайно в этих пределах)").pack(side="left")
+    ttk.Label(ir, text="сек (случайно)").pack(side="left")
 
-    tv = ttk.Treeview(pf, columns=("k", "w", "h"), show="headings", height=7, selectmode="browse")
+    tv = ttk.Treeview(pf, columns=("k", "w", "h"), show="headings", height=6, selectmode="browse")
     for c, h_, w in (("k", "Клавиша / действие", 210), ("w", "Частота", 70), ("h", "Удержание, мс", 110)):
         tv.heading(c, text=h_)
         tv.column(c, width=w, anchor="w" if c == "k" else "center")
@@ -613,34 +621,32 @@ def build_antiafk_tab(parent):
 
     pairs_var = tk.StringVar()
     norep_var = tk.BooleanVar()
-    ttk.Label(pf, text="Парные клавиши:").grid(row=4, column=0, sticky="w", **pad)
-    pe = ttk.Entry(pf, textvariable=pairs_var, width=20)
+    ttk.Label(opt, text="Парные клавиши:").grid(row=4, column=0, sticky="w", **pad)
+    pe = ttk.Entry(opt, textvariable=pairs_var, width=20)
     pe.grid(row=4, column=1, sticky="w", **pad)
     pe.bind("<FocusOut>", lambda ev: save_preset_fields())
-    ttk.Label(pf, text="например Up-Down: Down только после Up", style="Muted.TLabel").grid(
-        row=4, column=2, columnspan=2, sticky="w", **pad)
-    ttk.Checkbutton(pf, text="Не повторять одну клавишу два раза подряд", variable=norep_var,
-                    command=lambda: save_preset_fields()).grid(row=5, column=0, columnspan=4, sticky="w", **pad)
+    ttk.Label(opt, text="например Up-Down: Down только после Up", style="Muted.TLabel").grid(
+        row=5, column=0, columnspan=4, sticky="w", padx=6)
+    ttk.Checkbutton(opt, text="Не повторять одну клавишу два раза подряд", variable=norep_var,
+                    command=lambda: save_preset_fields()).grid(row=6, column=0, columnspan=4, sticky="w", **pad)
 
     per_en, per_min, per_key, per_even = tk.BooleanVar(), tk.StringVar(), tk.StringVar(), tk.BooleanVar()
-    prow = ttk.Frame(pf)
-    prow.grid(row=6, column=0, columnspan=4, sticky="w", **pad)
+    prow = ttk.Frame(opt)
+    prow.grid(row=7, column=0, columnspan=4, sticky="w", **pad)
     ttk.Checkbutton(prow, text="Каждые", variable=per_en, command=lambda: save_preset_fields()).pack(side="left")
     ttk.Spinbox(prow, from_=1, to=600, width=4, textvariable=per_min, command=lambda: save_preset_fields()).pack(side="left", padx=4)
     ttk.Label(prow, text="мин нажимать").pack(side="left")
     kcb = ttk.Combobox(prow, textvariable=per_key, values=ALL_ACTIONS, width=8, state="readonly")
     kcb.pack(side="left", padx=4)
     kcb.bind("<<ComboboxSelected>>", lambda e: save_preset_fields())
-    ttk.Checkbutton(pf, text="Перед этим выровнять парные клавиши до чётного числа нажатий",
+    ttk.Checkbutton(opt, text="Перед этим выровнять парные клавиши\nдо чётного числа нажатий",
                     variable=per_even, command=lambda: save_preset_fields()).grid(
-        row=7, column=0, columnspan=4, sticky="w", **pad)
+        row=8, column=0, columnspan=4, sticky="w", **pad)
 
-    logbox = tk.Text(L, height=7, width=60, state="disabled", font=("Consolas", 9))
-    logbox.grid(row=7, column=0, columnspan=4, sticky="ew", **pad)
+    logbox = tk.Text(lg, height=7, width=60, state="disabled", font=("Consolas", 9))
+    logbox.pack(fill="both", expand=True)
 
     # ================================================================ правая колонка: еда и вода
-    R = ttk.LabelFrame(parent, text="Еда и вода")
-    R.grid(row=0, column=1, sticky="nsew")
     food = cfg["food"]
     fen = tk.BooleanVar(value=food["enabled"])
     ttk.Checkbutton(R, text="Следить за голодом и жаждой", variable=fen,
@@ -655,19 +661,17 @@ def build_antiafk_tab(parent):
     ttk.Label(fr, text="сек, после еды ждать").pack(side="left")
     ttk.Spinbox(fr, from_=10, to=3600, increment=10, width=5, textvariable=cd_var, command=lambda: save_food()).pack(side="left", padx=4)
     ttk.Label(fr, text="сек").pack(side="left")
-    fr2 = ttk.Frame(R)
-    fr2.grid(row=2, column=0, columnspan=4, sticky="w", **pad)
-    ttk.Label(fr2, text="Точность распознавания, %:").pack(side="left")
+    fr2 = fr
+    ttk.Label(fr2, text="    Точность, %:").pack(side="left")
     ttk.Spinbox(fr2, from_=50, to=99, width=4, textvariable=thr_var, command=lambda: save_food()).pack(side="left", padx=4)
-    ttk.Label(fr2, text="(меньше - находит легче, но может ошибаться)", style="Muted.TLabel").pack(side="left")
+    ttk.Label(fr2, text="(меньше - находит легче, но может ошибиться)", style="Muted.TLabel").pack(side="left")
 
     need_ui = {}
-    row = 3
-    for need, title in NEEDS.items():
+    row = 4
+    for i, (need, title) in enumerate(NEEDS.items()):
         n = food["needs"][need]
         box = ttk.LabelFrame(R, text=title)
-        box.grid(row=row, column=0, columnspan=4, sticky="ew", **pad)
-        row += 1
+        box.grid(row=row, column=i * 2, columnspan=2, sticky="nsew", **pad)
         ivar = tk.StringVar()
         ttk.Button(box, text="Захватить значок", command=lambda k=need: capture_icon(k)).grid(row=0, column=0, **pad)
         ttk.Button(box, text="Проверить", command=lambda k=need: test_icon(k)).grid(row=0, column=1, **pad)
@@ -681,19 +685,19 @@ def build_antiafk_tab(parent):
         kcb2.grid(row=1, column=2, sticky="w", **pad)
         mcb.bind("<<ComboboxSelected>>", lambda e: save_food())
         kcb2.bind("<<ComboboxSelected>>", lambda e: save_food())
-        items = tk.Listbox(box, height=3, bg=T.FIELD, fg=T.TEXT, selectbackground=T.ACCENT_DIM,
+        items = tk.Listbox(box, height=2, bg=T.FIELD, fg=T.TEXT, selectbackground=T.ACCENT_DIM,
                            highlightthickness=1, highlightbackground=T.BORDER, relief="flat",
                            font=("Segoe UI", 9), activestyle="none")
-        items.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
+        items.grid(row=2, column=0, columnspan=4, sticky="ew", **pad)
         ib = ttk.Frame(box)
-        ib.grid(row=2, column=2, columnspan=2, sticky="nw", **pad)
-        ttk.Button(ib, text="+ Предмет", command=lambda k=need: add_item(k)).pack(fill="x")
-        ttk.Button(ib, text="Убрать", command=lambda k=need: del_item(k)).pack(fill="x", pady=2)
-        ttk.Button(ib, text="Выше", command=lambda k=need: move_item(k)).pack(fill="x")
+        ib.grid(row=3, column=0, columnspan=4, sticky="w", **pad)
+        ttk.Button(ib, text="+ Предмет", command=lambda k=need: add_item(k)).pack(side="left")
+        ttk.Button(ib, text="Убрать", command=lambda k=need: del_item(k)).pack(side="left", padx=4)
+        ttk.Button(ib, text="Выше", command=lambda k=need: move_item(k)).pack(side="left")
         need_ui[need] = {"icon": ivar, "mode": mode, "key": kv, "items": items}
 
-    inv = ttk.LabelFrame(R, text="Инвентарь")
-    inv.grid(row=row, column=0, columnspan=4, sticky="ew", **pad)
+    inv = ttk.Frame(invt)
+    inv.pack(anchor="nw")
     inv_key = tk.StringVar(value=food["inv_key"])
     close_key = tk.StringVar(value=food["close_key"])
     delay_var = tk.StringVar(value=str(food["open_delay"]))
@@ -716,10 +720,10 @@ def build_antiafk_tab(parent):
     ttk.Label(inv, textvariable=use_var, style="Muted.TLabel").grid(row=3, column=2, columnspan=2, sticky="w", **pad)
     for c in (c1, c2, gcb):
         c.bind("<<ComboboxSelected>>", lambda e: save_food())
-    ttk.Label(R, text="Как настроить: дождись, когда в игре появится значок голода или жажды, нажми\n"
-                      "«Захватить значок» и обведи его мышкой. Для инвентаря открой его и обведи\n"
+    ttk.Label(invt, text="Как настроить: дождись, когда в игре появится значок голода или жажды, нажми "
+                      "«Захватить значок» и обведи его мышкой. Для инвентаря открой его и обведи "
                       "мышкой каждый предмет, который можно использовать: бургер, воду, ИРП.",
-              style="Muted.TLabel", justify="left").grid(row=row + 1, column=0, columnspan=4, sticky="w", **pad)
+              style="Muted.TLabel", justify="left", wraplength=820).pack(anchor="w", padx=6, pady=(10, 0))
 
     # ================================================================ логика окна
     def all_presets():
@@ -1156,7 +1160,7 @@ def build_antiafk_tab(parent):
             status_var.set(s)
             status_lbl.configure(style="StatusOn.TLabel" if s == "Работает" else "Status.TLabel")
             info_var.set(ctl.get("info", "") if ctl["active"] else
-                         f"Включить: кнопка выше или {vk_name(cfg['toggle_vk'])}")
+                         f"Включить: кнопка ниже или {vk_name(cfg['toggle_vk'])}")
             if ov["win"] is not None:
                 ov["var"].set(f"АНТИ-АФК: {s}\n{ctl.get('info', '')}")
         except tk.TclError:

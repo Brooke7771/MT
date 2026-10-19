@@ -201,16 +201,17 @@ def build_admin_tab(parent, refresh_access):
                       ("Отвязать железо", lambda: unbind()), ("Переименовать", lambda: rename()),
                       ("Удалить", lambda: remove()), ("Обновить", lambda: reload())):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
-    ttk.Button(bar, text="Массово…", style="Accent.TButton", command=lambda: bulk_dialog()).pack(side="left", padx=(10, 2))
     bar2 = ttk.Frame(parent)
     bar2.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 6))
+    # «Массово…» - справа во втором ряду (в первом не помещалась)
+    ttk.Button(bar2, text="Массово…", style="Accent.TButton", command=lambda: bulk_dialog()).pack(side="right", padx=2)
     ttk.Label(bar2, text="Выбрать:", style="Muted.TLabel").pack(side="left", padx=(0, 4))
     for text, pred in (("все", lambda k: True), ("активные", lambda k: k["status"] == "active"),
                        ("истёкшие", lambda k: k["status"] == "expired"), ("отозванные", lambda k: k["status"] == "revoked"),
                        ("без устройств", lambda k: not k["devices"])):
         ttk.Button(bar2, text=text, command=lambda pr=pred: sel_where(pr)).pack(side="left", padx=2)
     ttk.Button(bar2, text="снять выбор", command=lambda: tv.selection_set(())).pack(side="left", padx=2)
-    ttk.Label(bar2, text="  (Ctrl/Shift + клик - несколько ключей)", style="Muted.TLabel").pack(side="left")
+    ttk.Label(bar2, text="  Ctrl/Shift + клик", style="Muted.TLabel").pack(side="left")
 
     keys_cache = {}
     pending = {"exp": None}        # ожидаемые доступы после изменения: сверяем с тем, что вернул сервер
