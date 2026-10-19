@@ -18,10 +18,10 @@ KEY = "#010203"
 CARD = "#13131a"
 EDGE = "#262630"
 TRACK = "#0b0b10"
-ORDER = ["fish", "bot", "wood", "mine", "gym", "afk", "sand"]
-TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка"}
-GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏", "gym": "✊"}
-COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff", "gym": "#ff8c42"}
+ORDER = ["fish", "bot", "wood", "mine", "gym", "farm", "afk", "sand"]
+TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏", "gym": "✊", "farm": "❀"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff", "gym": "#ff8c42", "farm": "#ffa726"}
 WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
 CW, CH, GAP = 284, 92, 10
@@ -216,7 +216,7 @@ class Hud:
         t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
         items = dict(d.get("items", []))
-        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов"}[key]
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев"}[key]
         val = items.get(main_label, 0)
         c["num"] += (val - c["num"]) * 0.25
         if int(val) != c["last"]:
@@ -291,6 +291,15 @@ class Hud:
             self._bar(X(16), X(230), ry, c["prog"], mix(ac, "#ffffff", 0.3 * pf), 9)
             txt = {"mini": f"{n_left} руды", "dig": "добыча"}.get(d.get("state"), "жду камень")
             self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
+        elif key == "farm":
+            n_left = int(d.get("left") or 0)
+            if n_left > c.get("max", 0) or not d.get("view"):
+                c["max"] = n_left if d.get("view") else 0
+            frac = 0.0 if not c.get("max") else 1.0 - n_left / c["max"]
+            c["prog"] += (frac - c["prog"]) * 0.3
+            self._bar(X(16), X(230), ry, c["prog"], mix(ac, "#ffffff", 0.3 * pf), 9)
+            txt = f"{n_left} апельс." if d.get("state") == "mini" else "жду дерево"
+            self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
         elif key == "gym":
             stage = int(d.get("stage") or 0)                # кружков пройдено в подходе (из 4)
             for i in range(4):
@@ -311,7 +320,7 @@ class Hud:
         by = y0 + CH - 17
         self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
         num = str(int(round(c["num"])))
-        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов"}[key]
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев"}[key]
         right = X(CW - 14)
         tail = f" {unit}{rate}"
         self._txt(right, by, tail, 8, False, T.MUTED, "e")

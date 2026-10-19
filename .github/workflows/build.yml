@@ -41,7 +41,7 @@ jobs:
           Get-Content version.py
 
       - name: Сборка
-        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --add-data "woodcut_assets.npz;." --add-data "mining_assets.npz;." --add-data "gym_assets.npz;." --name ${{ env.APP }} ${{ env.SCRIPT }}
+        run: pyinstaller --onefile --noconsole --uac-admin --clean --collect-data certifi --hidden-import certifi --add-data "woodcut_assets.npz;." --add-data "mining_assets.npz;." --add-data "gym_assets.npz;." --add-data "farm_assets.npz;." --name ${{ env.APP }} ${{ env.SCRIPT }}
 
       - name: Приложить exe к релизу
         if: github.event_name == 'release'

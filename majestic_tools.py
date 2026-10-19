@@ -48,6 +48,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("wood", "♣", "Лесоруб", "Рубку и ветки в мини-игре бот проходит сам: к дереву подходишь и жмёшь E ты"),
     ("mine", "⛏", "Шахта", "Добычу и сбор руды в мини-игре бот проходит сам: к камню подходишь и жмёшь E ты"),
     ("gym", "✊", "Качалка", "Упражнения бот делает сам: жмёт E и буквы W/A/S/D из кружков; к тренажёру встаёшь ты"),
+    ("farm", "❀", "Ферма", "Апельсины в мини-игре бот собирает сам: к дереву подходишь и жмёшь E ты"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -239,7 +240,7 @@ def main():
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
     built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
-    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "test": "Тест"}
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма", "test": "Тест"}
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
     TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
@@ -312,6 +313,9 @@ def main():
         if key == "gym":
             import gym
             return gym.build_gym_tab(pages["gym"])
+        if key == "farm":
+            import farm
+            return farm.build_farm_tab(pages["farm"])
         import fishing
         return fishing.build_fishing_tab(pages["fish"])
 
@@ -338,7 +342,7 @@ def main():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
         def allowed(k):
             return k in access["set"] or (k == "test" and L.has_master())
-        for key in ("bot", "afk", "fish", "wood", "mine", "gym", "test"):
+        for key in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "test"):
             if allowed(key) and key not in built:
                 for w in list(pages[key].winfo_children()):
                     w.destroy()
@@ -352,7 +356,7 @@ def main():
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "test") and not allowed(state["page"]):
+        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "test") and not allowed(state["page"]):
             select("home")
 
     sync_tabs()

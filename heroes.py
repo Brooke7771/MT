@@ -908,6 +908,60 @@ class GymHero(Hero):
                           (d.get("life") or {}).get("count"))
 
 
+class FarmHero(Hero):
+    H = 150
+    X0, Y0, X1, Y1 = 560, 60, 1360, 820                 # куст мини-игры (1080p)
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        act, state = bool(d.get("active")), d.get("state")
+        view = d.get("view") or {}
+        # --- куст и апельсины, которые видит бот
+        rw = 214
+        self.card(0, rw, fill="#101a10", outline="#25402a")
+        bh = H - 24
+        bw = bh * (self.X1 - self.X0) / (self.Y1 - self.Y0)
+        ox, oy = (rw - bw) / 2, 12
+        k = bh / (self.Y1 - self.Y0)
+        if state == "mini":
+            self.create_oval(ox + 6, oy, ox + bw - 6, oy + bh * 0.9, fill="#2f6b34", outline="#3f8a45")
+            for (x, y) in view.get("ores", []):
+                px, py = ox + (x - self.X0) * k, oy + (y - self.Y0) * k
+                self.create_oval(px - 5, py - 5, px + 5, py + 5, fill="#ffa726", outline="#7a3d00")
+            for (x, y) in view.get("skip", []):
+                px, py = ox + (x - self.X0) * k, oy + (y - self.Y0) * k
+                self.create_line(px - 4, py - 4, px + 4, py + 4, fill=T.MUTED, width=2)
+                self.create_line(px - 4, py + 4, px + 4, py - 4, fill=T.MUTED, width=2)
+            tg = view.get("t")
+            if tg:
+                px, py = ox + (tg[0] - self.X0) * k, oy + (tg[1] - self.Y0) * k
+                r = 7 + 3 * abs((t * 4) % 2 - 1)
+                self.create_oval(px - r, py - r, px + r, py + r, outline="#ff4d6d", width=2)
+        else:
+            self.create_oval(ox + 6, oy, ox + bw - 6, oy + bh * 0.9, fill="#1c2a1d", outline="#25402a")
+            self.text(rw / 2, H / 2, "жду дерево" if act else "выключено", 9, True, T.MUTED, "center")
+        # --- состояние
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, "Ферма")
+        self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        cells = [("Апельсинов на дереве", str(d.get("left") or 0) if state == "mini" else "—"),
+                 ("Кликов в секунду", f"{float(d.get('cps') or 0):g}"), ("В час", f"{self.rate}"),
+                 ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, "Деревьев", [("Апельсинов", str(self.shown("Апельсинов"))), ("В час", f"{self.rate}")],
+                          (d.get("life") or {}).get("count"))
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
           "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero,
-          "mine": MineHero, "gym": GymHero}
+          "mine": MineHero, "gym": GymHero, "farm": FarmHero}
