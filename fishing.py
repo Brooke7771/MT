@@ -34,7 +34,11 @@ def default_config():
             "invert": False, "hold_after_lost": 1.2, "zone": None, "focus_only": True,
             "auto_start": True, "start_key": "E", "auto_cast": True, "cast_key": "Space",
             "latency_ms": 45, "auto_hook": True, "hook_key": "Space",
-            "after_catch": "keep"}           # keep | release | none
+            "after_catch": "keep",           # keep | release | filter | none
+            "fish_release": [],              # filter: какие рыбы отпускать (остальные - забирать)
+            "fish_unknown": "keep",          # filter: название не прочиталось
+            "keep_record": False,            # filter: «Рекордный улов» забирать всегда
+            "collect": False}                # сохранять снимок окна улова каждой новой рыбы (для настройки)
 
 
 def load_config():
@@ -146,6 +150,129 @@ def dialog_on(img):
     kb, _, _ = crop(img, KEEP_BOX)
     rb, _, _ = crop(img, REL_BOX)
     return (kb.max(axis=2) > 95).sum() > 150 * k * k and (rb.max(axis=2) > 95).sum() > 150 * k * k
+
+# ================================================================ какая рыба в окне улова
+# Все рыбы игры (таблица Tweet «Гайд таблица по рыбалке»): название, уровень рыбалки
+# (с какого ловится, 10 = секретная зона), цена мин-макс без VIP.
+FISH = [
+    ("Вобла", 1, 0.65, 0.70), ("Краснопёрка", 1, 1.01, 1.08), ("Лещ", 1, 0.61, 0.67), ("Плотва", 1, 0.93, 1.00),
+    ("Коричневый сом", 2, 0.77, 0.82), ("Серебряный карась", 2, 0.81, 0.87),
+    ("Речной окунь", 3, 0.51, 0.56), ("Обыкновенная щука", 3, 0.46, 0.50), ("Радужная форель", 3, 0.47, 0.51),
+    ("Зеркальный карп", 3, 0.40, 0.44), ("Сом обыкновенный", 3, 0.41, 0.45),
+    ("Судак обыкновенный", 4, 0.54, 0.58), ("Голавль", 4, 0.52, 0.58), ("Сазан", 4, 0.46, 0.50),
+    ("Жерех", 5, 0.55, 0.59), ("Стерлядь", 5, 0.67, 0.73),
+    ("Полосатый лаврак", 6, 0.54, 0.59), ("Снук обыкновенный", 6, 0.49, 0.51), ("Альбула", 6, 0.52, 0.58),
+    ("Прибрежный басс", 6, 0.50, 0.54), ("Стальноголовый лосось", 6, 0.51, 0.54),
+    ("Круглый трахинот", 7, 0.46, 0.50), ("Тёмный горбыль", 7, 0.45, 0.49), ("Барракуда", 7, 0.51, 0.55),
+    ("Красный горбыль", 8, 0.49, 0.51), ("Тарпон", 8, 0.60, 0.63), ("Марлин", 8, 0.54, 0.58),
+    ("Рустер", 9, 0.84, 0.90), ("Сериола", 9, 0.86, 0.88),
+    ("Токсичный окунь", 10, 1.53, 1.60), ("Древняя гинерия", 10, 2.11, 2.15),
+]
+FISH_NAME = (788, 566, 1062, 604)    # название рыбы под картинкой
+FISH_KG = (1060, 566, 1112, 604)     # вес «0.75 KG»
+FISH_TAG = (790, 388, 1000, 418)     # плашка над картинкой («Рекордный улов»)
+
+
+def _letters(s):
+    return "".join(c for c in s.lower().replace("ё", "е") if c.isalpha())
+
+
+def match_fish(text):
+    """Прочитанный текст -> название из FISH (OCR может ошибиться в букве-двух) или None."""
+    import difflib
+    t = _letters(text)
+    if len(t) < 3:
+        return None
+    best, score = None, 0.0
+    for name, *_ in FISH:
+        r = difflib.SequenceMatcher(None, t, _letters(name)).ratio()
+        if r > score:
+            best, score = name, r
+    return best if score >= 0.75 else None
+
+
+def _ocr_box(img, box, lang, k=3.0):
+    """OCR кусочка экрана. Вокруг текста - поля цветом фона: короткое слово без полей
+    OCR Windows часто не видит вовсе (как ранги из одной цифры во вкладке PM)."""
+    import pm_ocr
+    from PIL import Image
+    a, _, _ = crop(img, box)
+    f = k * BASE_H / img.shape[0]
+    a = cv2.resize(a, (max(1, int(a.shape[1] * f)), max(1, int(a.shape[0] * f))), interpolation=cv2.INTER_CUBIC)
+    m = int(12 * k)
+    bg = [int(c) for c in np.median(a.reshape(-1, 3), axis=0)]
+    a = cv2.copyMakeBorder(a, m, m, m, m, cv2.BORDER_CONSTANT, value=bg)
+    return " ".join(w[0] for w in pm_ocr.ocr(Image.fromarray(cv2.cvtColor(a, cv2.COLOR_BGR2RGB)), lang))
+
+
+OCR_SCALES = (3.0, 2.0, 4.0, 2.5, 1.5)
+
+
+def read_catch(img):
+    """Окно улова -> {"name": название или None, "text": что прочитано, "kg": вес или None, "record": bool}.
+    Читает встроенный OCR Windows (как во вкладке PM); не узнал название - пробует другие масштабы."""
+    import re
+    name, text = None, ""
+    for k in OCR_SCALES:
+        t = _ocr_box(img, FISH_NAME, "ru", k)
+        text = text or t
+        name = match_fish(t)
+        if name:
+            text = t
+            break
+    kg = None
+    for k in (3.0, 2.0):
+        m = re.search(r"\d+[.,]\d+", _ocr_box(img, FISH_KG, "en", k))
+        if m:
+            kg = float(m.group(0).replace(",", "."))
+            break
+    tag = _letters(_ocr_box(img, FISH_TAG, "ru"))
+    return {"name": name, "text": text, "kg": kg, "record": "рекорд" in tag}
+
+
+def catch_action(cfg, info):
+    """Что делать с этой рыбой: "keep" / "release" и причина для журнала."""
+    act = cfg["after_catch"]
+    if act != "filter":
+        return act, ""
+    if info.get("record") and cfg.get("keep_record", True):
+        return "keep", "рекордный улов"
+    name = info.get("name")
+    if name is None:
+        return cfg.get("fish_unknown", "keep"), "название не прочитал"
+    return ("release" if name in cfg.get("fish_release", []) else "keep"), "по списку"
+
+
+SAMPLES_DIR = os.path.join(AF.app_dir(), "fish_samples")
+UNKNOWN_MAX = 40                     # сколько снимков нераспознанных рыб хранить
+
+
+def save_sample(img, info):
+    """Сбор образцов: снимок экрана с окном улова - по одному на каждую рыбу, которой ещё нет
+    в папке; нераспознанные - каждый раз (до UNKNOWN_MAX). Плюс строка в samples.csv.
+    -> имя файла или None (такая рыба уже есть)."""
+    os.makedirs(SAMPLES_DIR, exist_ok=True)
+    if info.get("name"):
+        fn = info["name"].replace(" ", "_") + ".png"
+        if os.path.exists(os.path.join(SAMPLES_DIR, fn)):
+            return None
+    else:
+        if len([f for f in os.listdir(SAMPLES_DIR) if f.startswith("нераспознано_")]) >= UNKNOWN_MAX:
+            return None
+        fn = time.strftime("нераспознано_%Y%m%d_%H%M%S.png")
+    ok, buf = cv2.imencode(".png", img)          # cv2.imwrite не умеет русские пути
+    if not ok:
+        return None
+    buf.tofile(os.path.join(SAMPLES_DIR, fn))
+    new = not os.path.exists(os.path.join(SAMPLES_DIR, "samples.csv"))
+    with open(os.path.join(SAMPLES_DIR, "samples.csv"), "a", encoding="utf-8-sig") as f:
+        if new:
+            f.write("время;файл;рыба;прочитано;кг;рекорд;экран\n")
+        f.write(";".join([time.strftime("%Y-%m-%d %H:%M:%S"), fn, info.get("name") or "",
+                          (info.get("text") or "").replace(";", ","), str(info.get("kg") or ""),
+                          "да" if info.get("record") else "", f"{img.shape[1]}x{img.shape[0]}"]) + "\n")
+    return fn
+
 
 def button_center(img, which):
     H, W = img.shape[:2]
@@ -511,7 +638,7 @@ class Fisher:
         self.fb_until = 0.0            # до какого момента клавиша навязана обратной связью
         self.fb_key = None
         self.tracker = Tracker()
-        self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0}
+        self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0, "fish": {}}
         self.state = "Жду"
         self.dbg = {}
         self.recorder = None
@@ -594,6 +721,29 @@ class Fisher:
                 except Exception:
                     pass
 
+    def identify(self):
+        """Читает название и вес рыбы в окне улова (до 3 попыток, пока окно «проявляется»).
+        -> (info, снимок с окном улова или None)."""
+        info = {"name": None, "text": "", "kg": None, "record": False}
+        last = None
+        for i in range(3):
+            if i:
+                self.sleep(0.2)
+            shot = self.grab()
+            if not dialog_on(shot):
+                break
+            last = shot
+            try:
+                info = read_catch(shot)
+            except Exception as ex:
+                if not getattr(self, "_ocr_warned", False):
+                    self._ocr_warned = True
+                    self.log(f"Не могу прочитать название рыбы (OCR Windows): {ex}")
+                break
+            if info["name"]:
+                break
+        return info, last
+
     FALL_PX = 5.0          # px (1080p): падение прогресса за окно, после которого считаем клавишу неверной
     FALL_WIN = 0.7         # с: окно оценки (и минимум с момента смены клавиши)
     FB_LOCK = 1.5          # с: сколько держим навязанную клавишу, не слушая трекер
@@ -630,14 +780,36 @@ class Fisher:
             if act != "none" and self.ago("dialog") > 2.5:
                 self.mark("dialog")
                 self.sleep(random.uniform(0.4, 0.8))
+                info, dshot = self.identify()
+                if cfg.get("collect") and dshot is not None:
+                    try:
+                        fn = save_sample(dshot, info)
+                        if fn:
+                            self.log(f"Сбор образцов: сохранил {fn}")
+                    except Exception as ex:
+                        self.log(f"Сбор образцов: не сохранил ({ex})")
+                act, why = catch_action(cfg, info)
                 x, y = button_center(shot, act)
                 self.inp.click(x, y)
                 self.stats["kept" if act == "keep" else "released"] += 1
-                self.log("Забрал улов себе" if act == "keep" else "Отпустил рыбу (+опыт)")
+                what = "рыба" if info["name"] is None else info["name"]
+                if info["name"]:
+                    self.stats["fish"][what] = self.stats["fish"].get(what, 0) + 1
+                kg = f" {info['kg']:.2f} кг" if info["kg"] else ""
+                self.log(f"Улов: {what}{kg} - " + ("забрал себе" if act == "keep" else "отпустил (+опыт)") +
+                         (f" ({why})" if why else ""))
                 self.sleep(0.4)
             return
 
-        if minigame_on(shot):
+        mg = minigame_on(shot)
+        if mg and not self.in_fight and progress_px(shot) is None:
+            # без заливки прогресса - не бой: после заброса белые уведомления внизу попадают
+            # на полоску, и бот 2-3 с жал A/D впустую (запись 20261020_231750). Рыбалка при этом идёт.
+            self.hold(None)
+            self.ui_seen = now
+            self.state = "Жду поклёвку"
+            return
+        if mg:
             self.ui_seen = now
             self.state = "Тяну рыбу"
             if not self.in_fight:
@@ -717,7 +889,9 @@ def cast_bar_band(band, x0, g0_hint, g1_hint):
 
 
 # ================================================================ окно
-AFTER = {"keep": "Забирать всё", "release": "Отпускать всё (ради опыта)", "none": "Ничего не делать"}
+AFTER = {"keep": "Забирать всё", "release": "Отпускать всё (ради опыта)", "filter": "По списку рыб",
+         "none": "Ничего не делать"}
+LEVEL_NAME = {10: "Секретная зона"}
 
 
 def build_fishing_tab(parent):
@@ -773,9 +947,91 @@ def build_fishing_tab(parent):
     after_var = tk.StringVar(value=AFTER[cfg["after_catch"]])
     acb = ttk.Combobox(ar, textvariable=after_var, values=list(AFTER.values()), state="readonly", width=28)
     acb.pack(side="left", padx=6)
-    acb.bind("<<ComboboxSelected>>", lambda e: save())
-    ttk.Label(cyc, text="После выбора в окне улова игра сама начинает новый заброс - и всё по кругу.",
-              style="Muted.TLabel").grid(row=6, column=0, columnspan=3, sticky="w", **pad)
+    acb.bind("<<ComboboxSelected>>", lambda e: (save(), show_filter()))
+    ttk.Button(ar, text="Список рыб...", command=lambda: fish_window()).pack(side="left", padx=4)
+    filter_var = tk.StringVar()
+    ttk.Label(cyc, textvariable=filter_var, style="Muted.TLabel", wraplength=640, justify="left").grid(
+        row=6, column=0, columnspan=3, sticky="w", **pad)
+
+    def show_filter():
+        if cfg["after_catch"] != "filter":
+            filter_var.set("Название и вес каждой рыбы - в журнале. Свой выбор рыб - кнопка «Список рыб...».")
+            return
+        rel = [n for n, *_ in FISH if n in cfg["fish_release"]]
+        filter_var.set(f"По списку: забираю {len(FISH) - len(rel)} из {len(FISH)} рыб" +
+                       (f", отпускаю: {', '.join(rel[:4])}" + (f" и ещё {len(rel) - 4}" if len(rel) > 4 else "")
+                        if rel else "") + ".")
+
+    fish_win = {"w": None}
+
+    def fish_window():
+        """Окно со всеми рыбами: включено - забирать, выключено - отпускать (+опыт)."""
+        import theme as T
+        if fish_win["w"] is not None and fish_win["w"].winfo_exists():
+            fish_win["w"].lift()
+            return
+        if cfg["after_catch"] != "filter":
+            after_var.set(AFTER["filter"])
+            save()
+            log("После улова: «По списку рыб»")
+        dlg = tk.Toplevel(parent)
+        fish_win["w"] = dlg
+        dlg.title("Какую рыбу забирать")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        ttk.Label(dlg, text="Включено - забрать себе, выключено - отпустить (+1 опыта). Цены - из таблицы Tweet "
+                            "(без VIP).", style="Muted.TLabel").grid(row=0, column=0, columnspan=3, sticky="w",
+                                                                     padx=12, pady=(10, 4))
+        fv = {}
+
+        def changed():
+            cfg["fish_release"] = [n for n, var in fv.items() if not var.get()]
+            persist()
+            show_filter()
+        cols = [ttk.Frame(dlg) for _ in range(3)]
+        for i, c in enumerate(cols):
+            c.grid(row=1, column=i, sticky="nw", padx=6)
+        where = {1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1, 7: 2, 8: 2, 9: 2, 10: 2}
+        for lvl in sorted({f[1] for f in FISH}):
+            box = ttk.LabelFrame(cols[where[lvl]], text=LEVEL_NAME.get(lvl, f"{lvl} уровень"))
+            box.pack(fill="x", padx=4, pady=3)
+            for name, l_, lo, hi in FISH:
+                if l_ != lvl:
+                    continue
+                fv[name] = tk.BooleanVar(value=name not in cfg["fish_release"])
+                row = ttk.Frame(box)
+                row.pack(fill="x")
+                ttk.Checkbutton(row, text=name, variable=fv[name], command=changed).pack(side="left", padx=4)
+                ttk.Label(row, text=f"{lo:.2f}-{hi:.2f}$", style="Muted.TLabel").pack(side="right", padx=6)
+        bot = ttk.Frame(dlg)
+        bot.grid(row=2, column=0, columnspan=3, sticky="ew", padx=10, pady=(6, 4))
+
+        def set_all(on):
+            for var in fv.values():
+                var.set(on)
+            changed()
+        ttk.Button(bot, text="Забирать всех", command=lambda: set_all(True)).pack(side="left", padx=2)
+        ttk.Button(bot, text="Отпускать всех", command=lambda: set_all(False)).pack(side="left", padx=2)
+        opt2 = ttk.Frame(dlg)
+        opt2.grid(row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+        UNK = {"keep": "забирать", "release": "отпускать"}
+        unk_var = tk.StringVar(value=UNK[cfg["fish_unknown"]])
+        rec_v = tk.BooleanVar(value=cfg["keep_record"])
+
+        def opt_changed(e=None):
+            cfg["fish_unknown"] = next(k for k, t in UNK.items() if t == unk_var.get())
+            cfg["keep_record"] = rec_v.get()
+            persist()
+        ttk.Label(opt2, text="Если название не прочиталось:").grid(row=0, column=0, sticky="w", padx=2, pady=3)
+        ucb = ttk.Combobox(opt2, textvariable=unk_var, values=list(UNK.values()), state="readonly", width=12)
+        ucb.grid(row=0, column=1, sticky="w", padx=6)
+        ucb.bind("<<ComboboxSelected>>", opt_changed)
+        ttk.Checkbutton(opt2, text="С плашкой «Рекордный улов» - забирать всегда", variable=rec_v,
+                        command=opt_changed).grid(row=1, column=0, columnspan=2, sticky="w", padx=2, pady=3)
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
 
     opt = ttk.LabelFrame(parent, text="Тонкая настройка")
     opt.grid(row=5, column=0, columnspan=4, sticky="ew", **pad)
@@ -806,9 +1062,25 @@ def build_fishing_tab(parent):
     ttk.Checkbutton(dbgf, text="Записывать отладочное видео", variable=rec_var,
                     command=lambda: toggle_rec()).grid(row=1, column=0, sticky="w", **pad)
     ttk.Checkbutton(dbgf, text="только вываживание", variable=rec_fight).grid(row=1, column=1, sticky="w", **pad)
+    col_var = tk.BooleanVar(value=cfg["collect"])
+    cr = ttk.Frame(dbgf)
+    cr.grid(row=2, column=0, columnspan=3, sticky="w", **pad)
+
+    def collect_changed():
+        cfg["collect"] = col_var.get()
+        persist()
+        log("Сбор образцов рыб " + ("включён: снимок каждой новой рыбы - в папку fish_samples"
+                                    if cfg["collect"] else "выключен"))
+    ttk.Checkbutton(cr, text="Собирать образцы рыб (снимок каждой новой рыбы - для настройки)",
+                    variable=col_var, command=collect_changed).pack(side="left")
+
+    def open_samples():
+        os.makedirs(SAMPLES_DIR, exist_ok=True)
+        os.startfile(SAMPLES_DIR)
+    ttk.Button(cr, text="Открыть папку", command=open_samples).pack(side="left", padx=6)
     rec_info = tk.StringVar(value="")
     ttk.Label(dbgf, textvariable=rec_info, style="Muted.TLabel", wraplength=640, justify="left").grid(
-        row=2, column=0, columnspan=3, sticky="w", **pad)
+        row=3, column=0, columnspan=3, sticky="w", **pad)
     shared = {"fi": None, "overlay": None}
 
     def stats_provider():
@@ -1029,6 +1301,7 @@ def build_fishing_tab(parent):
             shared["overlay"].destroy()
 
     show_zone()
+    show_filter()
     threading.Thread(target=worker, daemon=True).start()
     parent.after(150, pump)
     return stop
