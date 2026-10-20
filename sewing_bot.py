@@ -57,6 +57,8 @@ FEEDFORWARD_T = 0.25      # с: упреждение поворота по кр�
 TURN_SIGN = -1            # -1: A уменьшает угол, D увеличивает
 OMEGA0, OMEGA1 = 57.7, 44.0   # град/с: поворот ткани = OMEGA0 + OMEGA1*скорость (0..1), замерено по записи
 LAT_VIS = 0.02            # с: задержка от нажатия до снимка сверх шага цикла (подобрано на виртуальной швейке)
+PULSE_LOSS = 0.006        # с: столько игра «съедает» от каждого нажатия A/D (запись 20261020_191855: короткие нажатия давали ~75% поворота)
+CORNER_K = 0.15           # 1/px: линия впереди не прослеживается посреди сетки = острый угол, тормозим до него
 MIN_TURN = 1.0            # град: меньше - не крутим
 K_TURN = 1.3              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха)
 
@@ -65,7 +67,7 @@ SPEED_MAX = 1.00          # максимум на прямой
 RECOVER_SPEED = 0.40      # с какой скоростью подшиваться обратно к линии
 ACCEL, DECEL = 0.144, 0.62  # скорость (0..1) за секунду: разгон с газом, торможение без газа
 V0_PX, V1_PX = 22.0, 151.0  # px/с: скорость ткани = V0_PX + V1_PX*скорость
-STOP_ANGLE = 55.0         # линия настолько сбоку - сначала довернуть на месте
+STOP_ANGLE = 35.0         # линия настолько сбоку - сначала довернуть на месте
 
 STALL_TIME = 0.4          # с: стоим и не крутим дольше - всё равно едем
 ONLINE_DIST = 48          # px: ближе этого есть непрошитое - мы на линии
@@ -548,6 +550,13 @@ class Controller:
                 k = math.radians(angdiff(heads[j1], heads[j0])) / ((j1 - j0) * step)
                 if abs(k) > 1 / (400 * g.s):
                     path.append((dist, k))
+            if len(fwd) < 26:
+                # трасса оборвалась, а до края сетки далеко: впереди острый угол (на нём бот шил мимо узора)
+                ex, ey = (fwd[-1][0], fwd[-1][1]) if fwd else (x0, y0)
+                H_, W_ = st["U"].shape
+                m_ = 25 * g.s
+                if m_ < ex < W_ - m_ and m_ < ey < H_ - m_:
+                    path.append((r0 + step * len(fwd), CORNER_K / g.s))
             v_now = px_speed(st["speed"]) if st["speed"] is not None else 0.0
             err = theta + math.degrees(math.atan2(e, OFFSET_GAIN_L * g.s))
             err += math.degrees(kappa * v_now * FEEDFORWARD_T * self.g.s)
@@ -609,7 +618,8 @@ class Controller:
             self.rot = 1 if need > 0 else -1
             dur = min(abs(need) / w, self.loop_dt * 1.1)
             self.cmds = [(ts, min(d, now - ts), sg, ww) for ts, d, sg, ww in self.cmds]   # прошлое нажатие отменяется
-            self.cmds.append((now, dur, self.rot, w))
+            self.cmds.append((now + PULSE_LOSS, dur, self.rot, w))
+            dur += PULSE_LOSS
             self.last_cmd = (self.rot, dur)
             self.keys.set(dec_key if self.rot == 1 else inc_key, False)
             self.keys.pulse(inc_key if self.rot == 1 else dec_key, dur)
