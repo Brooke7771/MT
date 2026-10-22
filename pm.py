@@ -996,6 +996,7 @@ def build_pm_tab(parent, afk=False):
             hwnd = ctypes.windll.user32.GetParent(w.winfo_id()) or w.winfo_id()
             ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
             ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000 | 0x80 | 0x8)   # без фокуса, без панели задач
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x11)   # не попадает на снимки (скрины планшета)
         except Exception:
             pass
 

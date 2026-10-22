@@ -30,8 +30,9 @@ MENU_WORDS = {"Коллеги": (320, 420), "Учёт": (320, 420), "Управ�
 MENU_ICON = {"Коллеги": (497, 292), "Вызовы": (729, 543)}   # значки в меню EMS (если подпись не прочиталась)
 SORT_STATUS = (1450, 269)            # заголовок «Статус в сети» - сортировка
 AVAIL_TAB, HIST_TAB = (697, 130), (837, 130)   # вкладки «Доступные» / «История» в вызовах
-WAIT_LIST = (368, 250, 935, 980)     # карточки ожидающих вызовов
-WAIT_ID_X = (480, 520)               # x номера гражданина в карточке («Гражданин # 186094»)
+WAIT_BTN = (830, 250, 925, 985)      # красные кнопки причины в карточках ожидающих вызовов
+WAIT_ID_X = (486, 520)               # x номера гражданина в карточке («Гражданин # 186094»)
+WAIT_FULL = 8                        # столько целых карточек на экране, когда список длиннее экрана
 WAIT_C = (650, 620)                  # мышь для прокрутки карточек
 TABLE_C = (960, 640)                 # куда ставить мышь для прокрутки таблицы
 MAX_SHOTS = 30                       # предел скринов на раздел (вдруг прокрутка не кончается)
@@ -540,16 +541,8 @@ class Tablet:
                     if moved > 0:
                         per = moved / notches if per is None else (per + moved / notches) / 2
                 elif keys:                                         # перескочили строки - доснимаем назад
-                    self.log("Прокрутка перескочила строки - доснимаю и уменьшаю шаг")
-                    self.inp.move_to(*self.P(*TABLE_C))
-                    self.inp.wheel(-max(1, notches // 2))
-                    self.sleep(0.8)
-                    back = self.shot()
-                    bres = pm_ocr.recognize(back)
-                    if bres.get("kind") == kind:
-                        out.append((self.save(back), bres))
-                    self.inp.wheel(max(1, notches // 2))
-                    self.sleep(0.8)
+                    self.log("Прокрутка перескочила строки - доснимаю пропуск")
+                    self._fill_gap(kind, prev, keys, out)
                     per = (per or 10.0) * 1.5
                 if per:
                     notches = max(1, int(11 / per))
@@ -563,29 +556,81 @@ class Tablet:
             self.sleep(0.8)
         return out
 
+    def _fill_gap(self, kind, prev, keys, out):
+        """Между прошлым скрином (prev) и текущим (keys) пропуск: назад по одному щелчку колёсика,
+        снимая каждый шаг, пока не покажутся строки прошлого скрина; потом вперёд на столько же.
+        (В «Истории» список иногда прыгает сразу на ~3 минуты вызовов - запись 20261022_210357.)"""
+        back = 0
+        for _ in range(12):
+            self.inp.move_to(*self.P(*TABLE_C))
+            self.inp.wheel(-1)
+            back += 1
+            self.sleep(0.6)
+            img = self.shot()
+            res = pm_ocr.recognize(img)
+            if res.get("kind") != kind:
+                break
+            ks = [self._key(kind, r) for r in res["rows"]]
+            if ks and ks[0] in keys and keys.index(ks[0]) == 0:   # назад не сдвинулось - дальше нельзя
+                continue
+            out.append((self.save(img), res))
+            if any(k in prev for k in ks):                         # сошлось с прошлым скрином
+                break
+        self.inp.move_to(*self.P(*TABLE_C))
+        self.inp.wheel(back)
+        self.sleep(0.8)
+
     @staticmethod
     def _key(kind, r):
         if kind == "colleagues":
             return (r.get("uid"), r.get("name"))
         return (r.get("uid"), r.get("citizen"), r.get("date"))
 
+    def cards(self, img):
+        """Карточки «Доступные»: по красной кнопке причины («Смерть») справа в карточке -> центры кнопок по y
+        (только целые: кнопка не срезана краем списка)."""
+        import cv2
+        x0, y0, x1, y1 = self.B(WAIT_BTN)
+        a = np.asarray(img)[y0:y1, x0:x1].astype(np.int16)
+        red = ((a[:, :, 0] > 180) & (a[:, :, 1] < 90) & (a[:, :, 2] < 90)).astype(np.uint8)
+        n, _, st, _ = cv2.connectedComponentsWithStats(red)
+        k = self.k[1]
+        return sorted((y0 + y + h / 2) / k for x, y, w, h, _ in st[1:n]
+                      if w > 50 * k and 20 * k < h < 40 * k and y > 0 and y + h < red.shape[0] - 1)
+
+    def card_id(self, img, yb):
+        """Номер гражданина в карточке («Гражданин # 186094» - над кнопкой)."""
+        import cv2
+        x0, y0, x1, y1 = self.B((WAIT_ID_X[0], yb - 30, WAIT_ID_X[1] + 80, yb - 4))
+        c = np.asarray(img)[y0:y1, x0:x1]
+        if c.size == 0:
+            return ""
+        f = 2.5 / self.k[1]
+        c = cv2.resize(c, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+        c = cv2.copyMakeBorder(c, 30, 30, 30, 30, cv2.BORDER_CONSTANT,
+                               value=[int(v) for v in np.median(c.reshape(-1, 3), axis=0)])
+        from PIL import Image
+        t = "".join(w[0] for w in pm_ocr.ocr(Image.fromarray(c), "en"))
+        return "".join(ch for ch in t if ch.isdigit())
+
     def count_waiting(self):
-        """Вкладка «Доступные»: сколько вызовов ждут (номера граждан в карточках, с прокруткой)."""
+        """Вкладка «Доступные»: сколько вызовов ждут (номера граждан в карточках, с прокруткой).
+        На записи 20261022_210357: 8 целых карточек на экран, 6 / 17 / 13 вызовов."""
         ids = set()
         self.inp.move_to(*self.P(*WAIT_C))
         self.inp.wheel(-30)
         self.sleep(0.6)
-        for _ in range(12):
+        for _ in range(15):
             img = self.shot()
-            got = {w[0] for w in self.words(img, WAIT_LIST, "en", 1.0)
-                   if w[0].isdigit() and 3 <= len(w[0]) <= 7 and WAIT_ID_X[0] <= w[1] <= WAIT_ID_X[1]}
+            ys = self.cards(img)
+            got = {i for i in (self.card_id(img, y) for y in ys) if len(i) >= 2}
             new = got - ids
             ids |= got
-            if not new or len(got) < 7:                            # карточки кончились
+            if len(ys) < WAIT_FULL or not new:                     # всё влезло на экран / прокрутка кончилась
                 break
             self.inp.move_to(*self.P(*WAIT_C))
             self.inp.wheel(3)
-            self.sleep(0.6)
+            self.sleep(0.7)
         return len(ids)
 
     def run(self):
@@ -610,8 +655,8 @@ class Tablet:
                     return bool(ds) and sum(d == want for d in ds) >= 0.8 * len(ds)
                 if self.cfg.get("only_online", True):
                     first = self.sort_online(dept_ok)
-                    got = self._scroll_shots("colleagues", first,
-                                             lambda rows: any(r.get("status") not in pm_ocr.ONLINE for r in rows))
+                    got = self._scroll_shots("colleagues", first, lambda rows: rows and all(
+                        r.get("status") not in pm_ocr.ONLINE for r in rows[-2:]))
                 else:
                     got = self._scroll_shots("colleagues", self.settle("colleagues", dept_ok))
                 n = len({r.get("uid") for _, res in got for r in res["rows"]})
