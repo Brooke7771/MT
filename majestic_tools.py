@@ -49,6 +49,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("mine", "⛏", "Шахта", "Добычу и сбор руды в мини-игре бот проходит сам: к камню подходишь и жмёшь E ты"),
     ("gym", "✊", "Качалка", "Упражнения бот делает сам: жмёт E и буквы W/A/S/D из кружков; к тренажёру встаёшь ты"),
     ("farm", "❀", "Ферма", "Апельсины в мини-игре бот собирает сам: к дереву подходишь и жмёшь E ты"),
+    ("build", "⚒", "Стройка", "Шлифовка, грузовой лифт и молоток: мини-игры бот проходит сам, E жмёшь ты"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -127,6 +128,8 @@ def main():
     holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
     pages = {}
     test_state = {"key": None}               # какой бот выбран на странице «Тест»
+    build_state = {"key": None}              # ... и на странице «Стройка»
+    packs = {"test": test_state, "build": build_state}
     HOME = ("home", "⌂", "Главная", "Обзор: состояние ключа, память и быстрые переходы")
     ADMIN = ("admin", "🔑", "Админка", "Создание и управление ключами")
     PAGES_ALL = [HOME] + PAGES + [ADMIN]
@@ -162,7 +165,7 @@ def main():
         # иначе первый кадр анимации «залипает» на десятки миллисекунд
         pages[key].tkraise()
         state["page"] = key
-        dash.show((test_state["key"] or key) if key == "test" else key)      # на «Тесте» - блок выбранного бота
+        dash.show((packs[key]["key"] or key) if key in packs else key)      # на «Тесте»/«Стройке» - блок выбранного бота
         home.active = key == "home"
         if key == "home":
             home.replay()
@@ -241,29 +244,33 @@ def main():
                   justify="left").pack(padx=10, pady=10, anchor="w")
 
     built = {}                    # закрытые разделы, которые сейчас работают -> их функция остановки
-    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма", "test": "Тест"}
+    NAMES = {"bot": "Бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма",
+             "build": "Стройка", "test": "Тест"}
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
-    TEST_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
-                 ("click", "Кликер", "clicker", "build_clicker_tab")]
-    names["sand"] = "Шлифовка"
-    names["click"] = "Кликер"
+    TEST_BOTS = [("click", "Кликер", "clicker", "build_clicker_tab")]
+    # «Стройка» - пак ботов одной работы, доступ ключа build
+    BUILD_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
+                  ("lift", "Лифт", "lift", "build_lift_tab"),
+                  ("hammer", "Молоток", "hammer", "build_hammer_tab")]
+    PACKS = {"test": TEST_BOTS, "build": BUILD_BOTS}
+    names.update(sand="Шлифовка", click="Кликер", lift="Лифт", hammer="Молоток")
 
     def _bundle():
-        """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
-        Новый бот в TEST_BOTS - дописать и сюда."""
-        import sanding, clicker  # noqa: F401
+        """Не вызывается: модули ботов «Теста»/«Стройки» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
+        Новый бот в TEST_BOTS / BUILD_BOTS - дописать и сюда."""
+        import sanding, clicker, lift, hammer  # noqa: F401
 
-    def make_test():
-        """Страница «Тест»: сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
-        page = pages["test"]
+    def make_pack(pkey):
+        """Страница-пак («Тест», «Стройка»): сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
+        page, bots, pst = pages[pkey], PACKS[pkey], packs[pkey]
         strip = ttk.Frame(page)
         strip.pack(fill="x", padx=2, pady=(0, 6))
         ttk.Label(strip, text="Включить бота:", style="Muted.TLabel").pack(side="left", padx=(4, 10))
         nb = ttk.Notebook(page)
         nb.pack(fill="both", expand=True, padx=2, pady=2)
         order, vars_, stops_ = [], {}, []
-        for tkey, title, mod, fn in TEST_BOTS:
+        for tkey, title, mod, fn in bots:
             v = tk.BooleanVar(value=switches.is_on(tkey))
             vars_[tkey] = v
             ttk.Checkbutton(strip, text=title, variable=v,
@@ -279,13 +286,13 @@ def main():
 
         def tab_changed(e=None):
             try:
-                test_state["key"] = order[nb.index(nb.select())]
+                pst["key"] = order[nb.index(nb.select())]
             except (tk.TclError, IndexError):
                 return
-            if state.get("page") == "test":
-                dash.show(test_state["key"])
+            if state.get("page") == pkey:
+                dash.show(pst["key"])
         nb.bind("<<NotebookTabChanged>>", tab_changed)
-        test_state["key"] = order[0] if order else None
+        pst["key"] = order[0] if order else None
 
         def stop_all():
             for s in stops_:
@@ -293,12 +300,12 @@ def main():
                     s()
                 except Exception:
                     pass
-            test_state["key"] = None
+            pst["key"] = None
         return stop_all
 
     def make_tab(key):
-        if key == "test":
-            return make_test()
+        if key in PACKS:
+            return make_pack(key)
         if key == "bot":
             import sewing_bot
             return sewing_bot.build_bot_tab(pages["bot"], request_close=close)
@@ -331,8 +338,8 @@ def main():
             if st in stops:
                 stops.remove(st)
         widgets.PROVIDERS.pop(key, None)
-        if key == "test":
-            for tk_, *_ in TEST_BOTS:
+        if key in PACKS:
+            for tk_, *_ in PACKS[key]:
                 widgets.PROVIDERS.pop(tk_, None)
                 dash.views.pop(tk_, None)
         for w in list(pages[key].winfo_children()):
@@ -343,7 +350,7 @@ def main():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
         def allowed(k):
             return k in access["set"] or (k == "test" and L.has_master())
-        for key in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "test"):
+        for key in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test"):
             if allowed(key) and key not in built:
                 for w in list(pages[key].winfo_children()):
                     w.destroy()
@@ -357,7 +364,7 @@ def main():
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "test") and not allowed(state["page"]):
+        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test") and not allowed(state["page"]):
             select("home")
 
     sync_tabs()

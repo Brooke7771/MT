@@ -16,7 +16,7 @@ SIDE_W = 240
 CARD = "#15151c"
 EDGE = "#262630"
 DIM = "#5d5d68"
-LOCKED = {"bot", "fish", "afk", "wood", "mine", "gym", "farm"}
+LOCKED = {"bot", "fish", "afk", "wood", "mine", "gym", "farm", "build"}
 
 
 def _lerp(a, b, k):
@@ -25,7 +25,7 @@ def _lerp(a, b, k):
 
 # ====================================================================== боковое меню
 class Sidebar(tk.Canvas):
-    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "wood", "mine", "gym", "farm", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
+    GROUPS = [("", ["home"]), ("БОТЫ", ["bot", "fish", "wood", "mine", "gym", "farm", "build", "afk", "test"]), ("УТИЛИТЫ", ["ram", "cook", "market", "pm"]),
               ("СИСТЕМА", ["rec", "admin"])]
     ITEM_H, GAP, TOP = 42, 4, 86
     KEY_H = 92                  # карточка ключа внизу (с отступами)
@@ -252,6 +252,7 @@ TILES = [
     ("mine", "⛏", "Шахта", "Добыча и руда сами"),
     ("gym", "✊", "Качалка", "Упражнения сами"),
     ("farm", "❀", "Ферма", "Апельсины сами"),
+    ("build", "⚒", "Стройка", "Шлифовка, лифт, молоток"),
     ("afk", "♻", "Анти-АФК", "Нажатия, еда и вода"),
     ("ram", "⚡", "Чистильщик ОЗУ", "Освобождает память игры"),
     ("cook", "♨", "Готовка", "Калькулятор и таймеры"),
@@ -412,7 +413,8 @@ class HomePage(tk.Canvas):
                     return lab[0], col, (f"{n} позиций" if n else "")
                 return lab[0], col, ""
             items = d.get("items") or [("", 0)]
-            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев"}.get(key, "")
+            unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев",
+                    "build": "досок"}.get(key, "")
             metric = f"{items[0][1]} {unit}"
             st = str(d.get("status", ""))
             if d.get("active"):
@@ -491,12 +493,15 @@ class HomePage(tk.Canvas):
             import stats
         except Exception:
             stats = None
-        order = [k for k in ("fish", "bot", "wood", "mine", "gym", "farm", "afk", "sand") if k in locked_ok]
+        order = [k for k in ("fish", "bot", "wood", "mine", "gym", "farm", "afk") if k in locked_ok]
+        if "build" in locked_ok:
+            order += ["sand", "lift", "hammer"]
         if stats and order:
             ys = y
             self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
             y += 24
-            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев"}
+            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев",
+                      "lift": "Подъёмов лифта", "hammer": "Досок прибито"}
             cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
             secs = sum(stats.get(k)["secs"] for k in order)
             cells.append(("#time", "Время работы", secs))

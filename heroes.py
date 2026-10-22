@@ -962,6 +962,76 @@ class FarmHero(Hero):
                           (d.get("life") or {}).get("count"))
 
 
+# ====================================================================== стройка: лифт и молоток
+class StroikaHero(Hero):
+    """Лифт / молоток: полоска мини-игры (метка и зелёная зона), состояние, счётчик."""
+    H = 150
+    TITLE, BIG, WAIT = "", "", ""
+
+    def bar(self, x0, x1, y, v):
+        pass
+
+    def draw(self):
+        self.delete("all")
+        W, H = self.winfo_width(), self.H
+        if W < 420:
+            return
+        d, t = self.d, self.t()
+        act, v = bool(d.get("active")), d.get("view")
+        rw = 214
+        self.card(0, rw, fill="#11161a", outline="#24323a")
+        if v:
+            self.bar(0, rw, H, v)
+        else:
+            self.text(rw / 2, H / 2, self.WAIT if act else "выключено", 9, True, T.MUTED, "center")
+        cw = W * 0.27
+        x0, x1 = rw + 10, W - cw - 10
+        self.card(x0, x1)
+        self.label(x0 + 18, 24, self.TITLE)
+        self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        last = d.get("last")
+        cells = self.cells(d) + [("Последний раз", f"{last:.1f} с" if last else "—"), ("Время", fmt_time(self.sec))]
+        half = (x1 - x0 - 36) / 2
+        for i, (lab, val) in enumerate(cells):
+            x, y = x0 + 18 + (i % 2) * half, 80 + (i // 2) * 34
+            self.label(x, y, lab)
+            self.text(x, y + 14, val, 11, True)
+        self.counter_card(x1 + 10, W, self.BIG, [("В час", f"{self.rate}")], (d.get("life") or {}).get("count"))
+
+
+class LiftHero(StroikaHero):
+    TITLE, BIG, WAIT = "Грузовой лифт", "Подъёмов", "жду лифт"
+
+    def cells(self, d):
+        return [("Метка в зоне", f"{100 * float(d.get('inside') or 0):.0f}%" if d.get("view") else "—")]
+
+    def bar(self, x0, x1, H, v):
+        cx, y0, y1 = (x0 + x1) / 2, 14, H - 14             # шахта: экранные y 835-1040
+        _rrect(self, cx - 14, y0, cx + 14, y1, 6, fill="#0b0f12", outline="#24323a")
+        Y = lambda y: y0 + (y - 835) / 205.0 * (y1 - y0)
+        za, zb = Y(v["zone"][0]), Y(v["zone"][1])
+        _rrect(self, cx - 12, za, cx + 12, max(za + 3, zb), 3, fill="#46d36b", outline="")
+        m = Y(v["y"])
+        self.create_line(cx - 16, m, cx + 16, m, fill="#ff3d6e", width=4)
+        self.text(cx + 26, m, "▲" if v.get("hold") else "▼", 10, True, T.MUTED)
+
+
+class HammerHero(StroikaHero):
+    TITLE, BIG, WAIT = "Молоток", "Досок", "жду доску"
+
+    def cells(self, d):
+        return [("Ударов", str(self.shown("Ударов")))]
+
+    def bar(self, x0, x1, H, v):
+        y, a, b = H / 2, x0 + 16, x1 - 16                   # полоска: экранные x 1608-1877
+        _rrect(self, a, y - 12, b, y + 12, 6, fill="#0b0f12", outline="#24323a")
+        X = lambda x: a + (x - 1608) / 269.0 * (b - a)
+        za, zb = X(v["zone"][0]), X(v["zone"][1])
+        _rrect(self, za, y - 10, max(za + 3, zb), y + 10, 3, fill="#46d36b", outline="")
+        m = X(v["x"])
+        self.create_line(m, y - 16, m, y + 16, fill="#ff3d6e", width=4)
+
+
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
           "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero,
-          "mine": MineHero, "gym": GymHero, "farm": FarmHero}
+          "mine": MineHero, "gym": GymHero, "farm": FarmHero, "lift": LiftHero, "hammer": HammerHero}

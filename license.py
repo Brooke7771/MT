@@ -28,8 +28,9 @@ MASTER_KEYS = []
 
 OFFLINE_DAYS = 3                 # сколько суток без связи доступ держится по памяти
 FREE = {"ram", "cook", "market", "pm"}           # всегда доступно без ключа
-LOCKED = ["bot", "afk", "fish", "wood", "mine", "gym", "farm", "test"]  # под ключом ("test" - страница с ботами на проверке)
-ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма", "test": "Тест (боты на проверке)",
+LOCKED = ["bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test"]  # под ключом ("test" - страница с ботами на проверке)
+ACCESS_NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма",
+                "build": "Стройка (шлифовка, лифт, молоток)", "test": "Тест (боты на проверке)",
                 "ram": "Чистильщик ОЗУ", "cook": "Готовка", "market": "Рынок", "pm": "PM (таблица по скринам)"}
 
 
@@ -103,7 +104,7 @@ _hooks = []
 _wipe = {"pending": False}
 BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png",
              "stats.json", "sanding_config.json", "clicker_config.json", "woodcut_config.json",
-             "mining_config.json", "gym_config.json", "farm_config.json")
+             "mining_config.json", "gym_config.json", "farm_config.json", "lift_config.json", "hammer_config.json")
 BOT_DIRS = ("antiafk_templates", "fish_samples")
 BOT_GLOBS = ("debug_fishing_*",)
 

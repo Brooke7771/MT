@@ -18,10 +18,12 @@ KEY = "#010203"
 CARD = "#13131a"
 EDGE = "#262630"
 TRACK = "#0b0b10"
-ORDER = ["fish", "bot", "wood", "mine", "gym", "farm", "afk", "sand"]
-TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма"}
-GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏", "gym": "✊", "farm": "❀"}
-COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff", "gym": "#ff8c42", "farm": "#ffa726"}
+ORDER = ["fish", "bot", "wood", "mine", "gym", "farm", "afk", "sand", "lift", "hammer"]
+TITLES = {"fish": "Рыбалка", "bot": "Швейный бот", "afk": "Анти-АФК", "sand": "Шлифовка", "wood": "Лесоруб", "mine": "Шахта", "gym": "Качалка", "farm": "Ферма",
+          "lift": "Лифт", "hammer": "Молоток"}
+GLYPH = {"fish": "⚓", "bot": "✂", "afk": "♻", "sand": "⚒", "wood": "♣", "mine": "⛏", "gym": "✊", "farm": "❀", "lift": "⇕", "hammer": "⚒"}
+COLORS = {"fish": "#38c6e0", "bot": "#ff4d6d", "afk": "#9a86ff", "sand": "#ffb347", "wood": "#7ccf5a", "mine": "#5aa9ff", "gym": "#ff8c42", "farm": "#ffa726",
+          "lift": "#4fd1c5", "hammer": "#e0a44f"}
 WARN = "#ffb020"
 GAME_TITLES = ("gta", "rage", "majestic", "grand theft")
 CW, CH, GAP = 284, 92, 10
@@ -216,7 +218,8 @@ class Hud:
         t = now - self.t0
         sec = self.dash.sess.get(key, [0.0, None])[0]
         items = dict(d.get("items", []))
-        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев"}[key]
+        main_label = {"fish": "Поймано", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев",
+                      "lift": "Подъёмов", "hammer": "Досок"}[key]
         val = items.get(main_label, 0)
         c["num"] += (val - c["num"]) * 0.25
         if int(val) != c["last"]:
@@ -300,6 +303,21 @@ class Hud:
             self._bar(X(16), X(230), ry, c["prog"], mix(ac, "#ffffff", 0.3 * pf), 9)
             txt = f"{n_left} апельс." if d.get("state") == "mini" else "жду дерево"
             self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
+        elif key in ("lift", "hammer"):
+            v = d.get("view")                               # метка и зелёная зона мини-игры
+            xa, xb = X(16), X(230)
+            _rrect(cv, xa, ry - 5, xb, ry + 5, 4, fill=TRACK, outline=EDGE)
+            if v:
+                if key == "lift":                           # шахта лифта: низ слева, верх справа
+                    pos = lambda y: xa + (1040 - y) / 205.0 * (xb - xa)
+                else:
+                    pos = lambda x: xa + (x - 1608) / 269.0 * (xb - xa)
+                za, zb = sorted((pos(v["zone"][0]), pos(v["zone"][1])))
+                _rrect(cv, za, ry - 5, max(za + 3, zb), ry + 5, 3, fill="#46d36b", outline="")
+                m = pos(v["y"] if key == "lift" else v["x"])
+                cv.create_line(m, ry - 8, m, ry + 8, fill="#ff3d6e", width=3)
+            txt = ("тяну" if key == "lift" else "бью") if v else ("жду лифт" if key == "lift" else "жду доску")
+            self._txt(X(CW - 14), ry, txt, 11, True, T.TEXT, "e")
         elif key == "gym":
             stage = int(d.get("stage") or 0)                # кружков пройдено в подходе (из 4)
             for i in range(4):
@@ -320,7 +338,8 @@ class Hud:
         by = y0 + CH - 17
         self._pill(X(14), by, str(d.get("status") or "Работает"), ac)
         num = str(int(round(c["num"])))
-        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев"}[key]
+        unit = {"fish": "поймано", "bot": "компл.", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев",
+                "lift": "подъёмов", "hammer": "досок"}[key]
         right = X(CW - 14)
         tail = f" {unit}{rate}"
         self._txt(right, by, tail, 8, False, T.MUTED, "e")

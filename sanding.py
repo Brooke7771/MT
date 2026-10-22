@@ -266,7 +266,7 @@ def build_sand_tab(parent):
 
     def toggle():
         if not switches.is_on("sand") and not ctl["active"]:
-            log("Шлифовка выключена: включи её переключателем наверху страницы «Тест»")
+            log("Шлифовка выключена: включи её переключателем наверху страницы «Стройка»")
             return
         ctl["active"] = not ctl["active"]
 
