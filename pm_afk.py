@@ -28,6 +28,11 @@ DEPT_ITEM0, DEPT_STEP, DEPT_ITEMS = 251, 48, 4   # пункты списка: ц
 MENU_WORDS = {"Коллеги": (320, 420), "Учёт": (320, 420), "Управление": (320, 420), "Настройки": (320, 420),
               "Премирование": (570, 670), "Вызовы": (570, 670), "Черный": (570, 670)}
 MENU_ICON = {"Коллеги": (497, 292), "Вызовы": (729, 543)}   # значки в меню EMS (если подпись не прочиталась)
+SORT_STATUS = (1450, 269)            # заголовок «Статус в сети» - сортировка
+AVAIL_TAB, HIST_TAB = (697, 130), (837, 130)   # вкладки «Доступные» / «История» в вызовах
+WAIT_LIST = (368, 250, 935, 980)     # карточки ожидающих вызовов
+WAIT_ID_X = (480, 520)               # x номера гражданина в карточке («Гражданин # 186094»)
+WAIT_C = (650, 620)                  # мышь для прокрутки карточек
 TABLE_C = (960, 640)                 # куда ставить мышь для прокрутки таблицы
 MAX_SHOTS = 30                       # предел скринов на раздел (вдруг прокрутка не кончается)
 
@@ -36,18 +41,23 @@ TABLET_KEYS = ["Down", "Up", "Left", "Right", "F2", "F3", "F4", "F5", "F6", "F7"
 KEY_NAMES = {"Down": "Стрелка вниз", "Up": "Стрелка вверх", "Left": "Стрелка влево", "Right": "Стрелка вправо"}
 
 AFK_DEFAULT = {"interval": 10, "tablet_key": "Down", "dept": "PM", "colleagues": True, "calls": True,
+               "only_online": True, "waiting": True,
                "group": False, "idle_guard": False, "idle_sec": 60, "sound": True, "popup": True, "tg": False}
 
 EVENTS = {"no_calls": "Не берёт вызовы", "away": "«Нет на месте» дольше", "inout": "Зашёл / вышел из игры",
-          "changes": "Сменил ранг / отдел / группу"}
+          "changes": "Сменил ранг / отдел / группу", "waiting": "Вызовов в ожидании не меньше",
+          "missed": "Непринятых вызовов за час не меньше"}
 TIMED = ("no_calls", "away")             # у этих событий есть «минут»
+COUNTED = ("waiting", "missed")          # общие по всем вызовам, число - «штук»
 
 
 def default_rules():
     return [new_rule("Не катает 20 мин", "no_calls", 20),
             new_rule("Нет на месте 15 мин", "away", 15),
             new_rule("Зашёл / вышел (вайтлист)", "inout", 0, on=False, white_only=True),
-            new_rule("Ранг, отдел, группа", "changes", 0)]
+            new_rule("Ранг, отдел, группа", "changes", 0),
+            new_rule("Много вызовов ждут", "waiting", 5, on=False),
+            new_rule("Много непринятых за час", "missed", 10, on=False)]
 
 
 def new_rule(name, event, minutes, on=True, white_only=False):
@@ -109,8 +119,9 @@ def load_state():
             s = json.load(f)
     except (OSError, ValueError):
         s = {}
-    for k in ("prev", "online_since", "away_since", "last_call", "fired"):
+    for k in ("prev", "online_since", "away_since", "last_call", "fired", "calls_seen", "stats"):
         s.setdefault(k, {})
+    s.setdefault("waiting_log", [])
     return s
 
 
@@ -123,7 +134,51 @@ def save_state(s):
         pass
 
 
-def evaluate(snap, rules, state, white, now=None):
+def call_stats(snap, state, waiting, now, shift):
+    """Приблизительная статистика вызовов по «Истории» всех проверок: вызов без сотрудника = не принят
+    («Отменено игроком» - не дождался, «Время истекло»). Вызовы копятся без повторов (гражданин + время)."""
+    seen = state["calls_seen"]
+    for c in snap.get("calls", []):
+        dt = PT._dt(c.get("date"))
+        if not dt or not c.get("citizen"):
+            continue
+        key = f"{c['citizen']}|{c.get('date')}"
+        acc = 1 if c.get("uid") else 0
+        if key not in seen or acc > seen[key][1]:
+            seen[key] = [dt.timestamp() - shift, acc]
+    for k in [k for k, v in seen.items() if now - v[0] > 26 * 3600]:
+        del seen[k]
+    if waiting is not None:
+        state["waiting_log"] = [w for w in state["waiting_log"] if now - w[0] < 24 * 3600] + [[now, waiting]]
+    midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+
+    def part(t0):
+        v = [x for x in seen.values() if x[0] >= t0]
+        return len(v), sum(1 for x in v if not x[1])
+    h_all, h_miss = part(now - 3600)
+    d_all, d_miss = part(midnight)
+    wl = [w[1] for w in state["waiting_log"] if w[0] >= midnight]
+    st = {"t": now, "waiting": waiting, "hour": [h_all, h_miss], "today": [d_all, d_miss],
+          "waiting_avg": round(sum(wl) / len(wl), 1) if wl else None, "waiting_max": max(wl) if wl else None}
+    state["stats"] = st
+    return st
+
+
+def stats_text(st):
+    if not st:
+        return ""
+    out = []
+    if st.get("waiting") is not None:
+        out.append(f"ждут сейчас: {st['waiting']}" + (f" (сегодня в среднем {st['waiting_avg']}, макс. {st['waiting_max']})"
+                                                      if st.get("waiting_avg") is not None else ""))
+    for k, name in (("hour", "за час"), ("today", "сегодня")):
+        a, m = st.get(k) or (0, 0)
+        if a:
+            out.append(f"не принято {name}: {m} из {a} ({round(100 * m / a)}%)")
+    return " · ".join(out)
+
+
+def evaluate(snap, rules, state, white, now=None, waiting=None):
     """Снимок новой проверки (полный, без фильтра вкладки) -> [(правило, текст)].
     state копит между проверками: прошлые статусы, с какого времени в сети / «нет на месте»,
     последний вызов каждого и уже отправленные уведомления (по одному на случай, пока он длится)."""
@@ -133,7 +188,13 @@ def evaluate(snap, rules, state, white, now=None):
     ts = [PT._dt(c.get("date")) for c in snap.get("calls", [])]
     newest = max((t.timestamp() for t in ts if t), default=None)
     # время в истории - часы сервера игры; у кого другой часовой пояс на ПК - сдвиг на целые часы
-    shift = round((newest - now) / 3600) * 3600 if newest and abs(newest - now) < 15 * 3600 else 0
+    # (сдвиг узнаём, только когда свежий вызов почти ровно на целые часы от ПК, и запоминаем)
+    if newest and abs(newest - now) < 15 * 3600:
+        k = round((newest - now) / 3600)
+        if abs(newest - now - k * 3600) < 10 * 60:
+            state["tz_shift"] = k * 3600
+    shift = state.get("tz_shift", 0)
+    cst = call_stats(snap, state, waiting, now, shift) if snap.get("has_calls") or waiting is not None else {}
     for c, dt in zip(snap.get("calls", []), ts):       # последний вызов каждого (история шире окна)
         if c.get("uid") and dt:
             t = dt.timestamp() - shift
@@ -154,6 +215,17 @@ def evaluate(snap, rules, state, white, now=None):
         if not r.get("on"):
             continue
         ev, mins = r["event"], max(0, int(r.get("minutes") or 0))
+        if ev in COUNTED:
+            v = cst.get("waiting") if ev == "waiting" else (cst.get("hour") or [0, 0])[1]
+            key = r["id"]
+            if v is not None and v >= mins:
+                if key not in state["fired"]:
+                    state["fired"][key] = now
+                    out.append((r, f"вызовов в ожидании: {v}" if ev == "waiting" else
+                                f"не принято вызовов за час: {v} из {cst['hour'][0]}"))
+            elif v is not None:
+                state["fired"].pop(key, None)
+            continue
         for uid, e in emp.items():
             if not who_match(uid, e, r.get("who", {}), white):
                 continue
@@ -221,11 +293,13 @@ class Tablet:
     """Один проход по планшету. inp - antiafk.Input2, grab() -> картинка PIL всего экрана,
     log(текст), save(PIL) -> путь, is_game() -> игра на переднем плане."""
 
-    def __init__(self, cfg, inp, grab, log, save, is_game, window_min=15, stop=lambda: False, sleep=time.sleep):
+    def __init__(self, cfg, inp, grab, log, save, is_game, hist_min=17, stop=lambda: False, sleep=time.sleep):
+        """hist_min - на сколько минут назад листать «Историю» (окно «катает» или время между проверками + запас)."""
         self.cfg, self.inp, self.grab, self.log, self.save = cfg, inp, grab, log, save
-        self.is_game, self.window_min, self.stop, self.sleep = is_game, window_min, stop, sleep
+        self.is_game, self.hist_min, self.stop, self.sleep = is_game, hist_min, stop, sleep
         self.k = (1.0, 1.0)
-        self.per = None                  # строк за один щелчок колёсика (узнаём на первой прокрутке)
+        self.per = {}                    # строк за один щелчок колёсика у каждого раздела (уточняется на ходу)
+        self.waiting = None
 
     # ---- зрение
     def P(self, x, y):
@@ -370,11 +444,11 @@ class Tablet:
         return "ВСЕ" if t in ("ВСЕ", "BCE", "BСЕ") or t.startswith("ВСЕОТ") or t.startswith("BCEOT") else t
 
     def set_dept(self, dept):
-        """Фильтр «Все отделы» → нужный отдел (пусто - все отделы)."""
+        """Фильтр «Все отделы» → нужный отдел (пусто - все отделы). -> True, если переключали."""
         want = self._dept_norm(dept) if dept else "ВСЕ"
         img = self.shot()
         if self._dept_norm(self.short(img, DEPT_CUR)) == want:
-            return
+            return False
         self.click(*DEPT_OPEN, 0.8)
         for attempt in range(8):
             img = self.shot()
@@ -383,24 +457,78 @@ class Tablet:
                 if self._dept_norm(self.short(img, (1352, y - 17, 1440, y + 17))) == want:
                     self.click(1400, y, 1.0)
                     self.log(f"Отдел: {dept or 'все'}")
-                    return
+                    return True
             self.inp.move_to(*self.P(1440, DEPT_ITEM0 + DEPT_STEP))   # пункт ниже видимых - листаем список
             self.inp.wheel(1)
             self.sleep(0.4)
         self.click(*DEPT_OPEN, 0.5)
         raise Abort(f"в списке отделов нет «{dept or 'Все отделы'}»")
 
-    def _scroll_shots(self, kind, enough=None):
-        """Скрины раздела с прокруткой вниз до конца (или пока enough(rows) не скажет «хватит»).
-        Шаг прокрутки подбирается по сдвигу строк (первая строка нового скрина - какая по счёту
-        на прошлом): ~11 строк за раз, чтобы соседние скрины перекрывались."""
-        self.inp.move_to(*self.P(*TABLE_C))
-        self.inp.wheel(-60)                                        # к началу списка
-        self.sleep(0.8)
-        out, prev, notches = [], None, (max(1, int(11 / self.per)) if self.per else 1)
-        for _ in range(MAX_SHOTS):
+    def settle(self, kind, check=None, timeout=8.0):
+        """Ждём, пока страница прогрузится: два распознавания подряд одинаковые и check(rows) - да.
+        (После перехода и смены отдела игра ещё долю секунды показывает старый список.)"""
+        t_end = time.time() + timeout
+        prev, last = None, None
+        while True:
             img = self.shot()
             res = pm_ocr.recognize(img)
+            keys = [self._key(kind, r) for r in res["rows"]] if res.get("kind") == kind else None
+            if keys:
+                last = (img, res)
+                if keys == prev and (check is None or check(res["rows"])):
+                    return img, res
+            if time.time() > t_end:
+                if last:
+                    return last
+                raise Abort("страница не прогрузилась: " + ("«Коллеги»" if kind == "colleagues" else "«История» вызовов"))
+            prev = keys
+            self.sleep(0.6)
+
+    @staticmethod
+    def online_first(rows):
+        """Список отсортирован «сначала в сети»: ни одного в сети после не в сети."""
+        seen_off = False
+        for r in rows:
+            on = r.get("status") in pm_ocr.ONLINE
+            if on and seen_off:
+                return False
+            seen_off = seen_off or not on
+        return True
+
+    def sort_online(self, dept_ok):
+        """Щелчок по «Статус в сети»: сначала кто в сети. Второй щелчок переворачивает - проверяем по строкам."""
+        img, res = self.settle("colleagues", dept_ok)
+        rows = res["rows"]
+        if rows and rows[0].get("status") in pm_ocr.ONLINE and self.online_first(rows):
+            return img, res
+        for _ in range(2):
+            self.click(*SORT_STATUS, 1.0)
+            img, res = self.settle("colleagues", dept_ok)
+            rows = res["rows"]
+            if rows and rows[0].get("status") in pm_ocr.ONLINE and self.online_first(rows):
+                self.log("Сортировка: сначала кто в сети")
+                return img, res
+        self.log("Сортировка по статусу не встала (никого нет в сети?) - снимаю весь список")
+        return img, res
+
+    def _scroll_shots(self, kind, first=None, enough=None):
+        """Скрины раздела с прокруткой вниз до конца (или пока enough(rows) не скажет «хватит»).
+        first - уже прогруженный первый экран (img, res). Шаг прокрутки свой у каждого раздела и
+        уточняется на каждом шаге по сдвигу строк (первая строка нового скрина - какая по счёту на
+        прошлом): ~11 строк за раз, чтобы соседние скрины перекрывались; перескок - доснимаем назад."""
+        if first is None:
+            self.inp.move_to(*self.P(*TABLE_C))
+            self.inp.wheel(-60)                                    # к началу списка
+            self.sleep(0.8)
+            first = self.settle(kind)
+        per = self.per.get(kind)
+        out, prev, notches = [], None, (max(1, int(11 / per)) if per else 1)
+        for i in range(MAX_SHOTS):
+            if i == 0:
+                img, res = first
+            else:
+                img = self.shot()
+                res = pm_ocr.recognize(img)
             if res.get("kind") != kind:
                 raise Abort(f"на экране не {'«Коллеги»' if kind == 'colleagues' else '«История» вызовов'}")
             keys = [self._key(kind, r) for r in res["rows"]]
@@ -409,29 +537,30 @@ class Tablet:
                     break
                 if keys and keys[0] in prev:
                     moved = prev.index(keys[0])
-                    if moved > 0 and self.per is None:
-                        self.per = moved / notches
+                    if moved > 0:
+                        per = moved / notches if per is None else (per + moved / notches) / 2
                 elif keys:                                         # перескочили строки - доснимаем назад
                     self.log("Прокрутка перескочила строки - доснимаю и уменьшаю шаг")
                     self.inp.move_to(*self.P(*TABLE_C))
                     self.inp.wheel(-max(1, notches // 2))
-                    self.sleep(0.7)
+                    self.sleep(0.8)
                     back = self.shot()
                     bres = pm_ocr.recognize(back)
                     if bres.get("kind") == kind:
                         out.append((self.save(back), bres))
                     self.inp.wheel(max(1, notches // 2))
-                    self.sleep(0.7)
-                    self.per = (self.per or 15.0) * 1.5
-                if self.per:
-                    notches = max(1, int(11 / self.per))
+                    self.sleep(0.8)
+                    per = (per or 10.0) * 1.5
+                if per:
+                    notches = max(1, int(11 / per))
+                    self.per[kind] = per
             out.append((self.save(img), res))
             prev = keys
             if enough and enough(res["rows"]):
                 break
             self.inp.move_to(*self.P(*TABLE_C))
             self.inp.wheel(notches)
-            self.sleep(0.7)
+            self.sleep(0.8)
         return out
 
     @staticmethod
@@ -440,16 +569,51 @@ class Tablet:
             return (r.get("uid"), r.get("name"))
         return (r.get("uid"), r.get("citizen"), r.get("date"))
 
+    def count_waiting(self):
+        """Вкладка «Доступные»: сколько вызовов ждут (номера граждан в карточках, с прокруткой)."""
+        ids = set()
+        self.inp.move_to(*self.P(*WAIT_C))
+        self.inp.wheel(-30)
+        self.sleep(0.6)
+        for _ in range(12):
+            img = self.shot()
+            got = {w[0] for w in self.words(img, WAIT_LIST, "en", 1.0)
+                   if w[0].isdigit() and 3 <= len(w[0]) <= 7 and WAIT_ID_X[0] <= w[1] <= WAIT_ID_X[1]}
+            new = got - ids
+            ids |= got
+            if not new or len(got) < 7:                            # карточки кончились
+                break
+            self.inp.move_to(*self.P(*WAIT_C))
+            self.inp.wheel(3)
+            self.sleep(0.6)
+        return len(ids)
+
     def run(self):
-        """Полный проход -> [(путь, результат recognize)]. Abort - что-то пошло не так (планшет закрывается)."""
+        """Полный проход -> [(путь, результат recognize)]; self.waiting - сколько вызовов ждут (или None).
+        Abort - что-то пошло не так (планшет закрывается)."""
         shots = []
+        self.waiting = None
         try:
             s, ws = self.open()
             if self.cfg["colleagues"]:
                 ws = self.to_menu(s, ws)
                 s, ws = self.section(ws, "Коллеги", ("colleagues",))
-                self.set_dept(self.cfg.get("dept", "").strip())
-                got = self._scroll_shots("colleagues")
+                dept = self.cfg.get("dept", "").strip()
+                want = self._dept_norm(dept)
+                self.settle("colleagues")                          # список прогрузился - потом фильтр
+                self.set_dept(dept)
+
+                def dept_ok(rows):
+                    if not dept:
+                        return True
+                    ds = [self._dept_norm(r.get("dept")) for r in rows if r.get("dept") not in (None, "", "?")]
+                    return bool(ds) and sum(d == want for d in ds) >= 0.8 * len(ds)
+                if self.cfg.get("only_online", True):
+                    first = self.sort_online(dept_ok)
+                    got = self._scroll_shots("colleagues", first,
+                                             lambda rows: any(r.get("status") not in pm_ocr.ONLINE for r in rows))
+                else:
+                    got = self._scroll_shots("colleagues", self.settle("colleagues", dept_ok))
                 n = len({r.get("uid") for _, res in got for r in res["rows"]})
                 self.log(f"Коллеги: {len(got)} скр., {n} сотрудников")
                 shots += got
@@ -457,11 +621,22 @@ class Tablet:
             if self.cfg["calls"]:
                 ws = self.to_menu(s, ws)
                 s, ws = self.section(ws, "Вызовы", ("calls", "history"))
+                if self.cfg.get("waiting", True):
+                    if s == "history":
+                        w = self.find(ws, "Доступные", y1=165)
+                        self.click(*((w[1] + w[3] / 2, w[2] + w[4] / 2) if w else AVAIL_TAB), 1.2)
+                        s, ws = self.wait_screen(("calls",), 4)
+                    if s == "calls":
+                        self.sleep(0.8)                            # карточки подгружаются
+                        self.waiting = self.count_waiting()
+                        self.log(f"Вызовов в ожидании: {self.waiting}")
+                        s, ws = self.screen()
                 if s == "calls":
                     w = self.find(ws, "История", y1=165)
-                    if w is None:
-                        raise Abort("нет вкладки «История» в вызовах")
-                    self.click(w[1] + w[3] / 2, w[2] + w[4] / 2, 1.2)
+                    self.click(*((w[1] + w[3] / 2, w[2] + w[4] / 2) if w else HIST_TAB), 1.2)
+                    s, ws = self.wait_screen(("history",), 4)
+                    if s != "history":
+                        raise Abort("не открылась «История» вызовов")
                 newest = {"t": None}
 
                 def enough(rows):
@@ -470,8 +645,11 @@ class Tablet:
                     if not ts:
                         return False
                     newest["t"] = max(newest["t"] or 0, max(ts))
-                    return self.window_min > 0 and min(ts) < newest["t"] - (self.window_min + 2) * 60
-                got = self._scroll_shots("calls", enough)
+                    return self.hist_min > 0 and min(ts) < newest["t"] - self.hist_min * 60
+                self.inp.move_to(*self.P(*TABLE_C))
+                self.inp.wheel(-60)
+                self.sleep(0.8)
+                got = self._scroll_shots("calls", self.settle("calls"), enough)
                 self.log(f"История вызовов: {len(got)} скр.")
                 shots += got
                 s, ws = self.screen()
@@ -609,13 +787,15 @@ class Runner:
             self.post(("afk_status", "АФК: " + m))
         BUSY["on"] = True
         self.running = True
-        err, shots, t0 = "", [], time.time()
+        err, shots, t0, waiting = "", [], time.time(), None
         try:
             time.sleep(0.6)                                        # анти-АФК успевает встать на паузу
             tab = Tablet(cfg, AF.Input2(), grab, log, save,
                          lambda: any(t in AF.foreground_title().lower() for t in GAME_TITLES),
-                         window_min=self.window(), stop=lambda: not self.alive or not (self.on or forced))
+                         hist_min=max(self.window(), float(cfg["interval"])) + 3,
+                         stop=lambda: not self.alive or not (self.on or forced))
             shots = tab.run()
+            waiting = tab.waiting
         except Abort as ex:
             err = str(ex)
         except Exception as ex:
@@ -627,7 +807,7 @@ class Runner:
                 sct.close()
             except Exception:
                 pass
-        self.post(("afk", shots, err, time.time() - t0))
+        self.post(("afk", shots, err, time.time() - t0, waiting))
         try:                                                       # старые проверки - удалить
             import shutil
             for old in sorted(os.listdir(shots_root()))[:-KEEP_ROUNDS]:

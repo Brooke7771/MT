@@ -98,6 +98,8 @@ def build_pm_tab(parent, afk=False):
         cfg["afk"] = pm_afk.afk_cfg(cfg.get("afk"))
         if not isinstance(cfg.get("afk_rules"), list):
             cfg["afk_rules"] = pm_afk.default_rules()
+        have = {r_.get("event") for r_ in cfg["afk_rules"]}
+        cfg["afk_rules"] += [r_ for r_ in pm_afk.default_rules() if r_["event"] in pm_afk.COUNTED and r_["event"] not in have]
         save_cfg(cfg)
         bar3 = ttk.Frame(parent)
         bar3.pack(fill="x", padx=8, pady=(0, 4))
@@ -108,6 +110,8 @@ def build_pm_tab(parent, afk=False):
         ttk.Button(bar3, text="Правила наблюдения…", command=lambda: rules_dialog()).pack(side="left", padx=4)
         afk_ui["var"] = tk.StringVar(value="АФК-режим выключен: бот сам достаёт планшет и снимает скрины по таймеру")
         ttk.Label(bar3, textvariable=afk_ui["var"], style="Muted.TLabel").pack(side="left", padx=10)
+        afk_ui["stats"] = tk.StringVar(value=pm_afk.stats_text(pm_afk.load_state().get("stats")))
+        ttk.Label(parent, textvariable=afk_ui["stats"], style="Muted.TLabel").pack(anchor="w", padx=10)
     msg = tk.StringVar(value=("Добавь скрины «Коллеги», «Вызовы» (История) и группы в телефоне. Можно несколько: они склеятся."
                               if ok else "⚠ " + ocr_msg))
     ttk.Label(parent, textvariable=msg, style="Muted.TLabel" if ok else "Warn.TLabel").pack(anchor="w", padx=10)
@@ -889,7 +893,7 @@ def build_pm_tab(parent, afk=False):
                     if afk_ui:
                         afk_ui["var"].set(m[1])
                 elif m[0] == "afk":
-                    afk_done(m[1], m[2], m[3])
+                    afk_done(m[1], m[2], m[3], m[4] if len(m) > 4 else None)
                 elif m[0] == "folder":
                     folder_lbl.configure(text=short(m[1]))
                 elif m[0] == "done":
@@ -915,7 +919,7 @@ def build_pm_tab(parent, afk=False):
         afk_ui["btn"].configure(text="АФК-режим: ВКЛ" if run.on else "АФК-режим: выкл",
                                 style="Accent.TButton" if run.on else "TButton")
 
-    def afk_done(shots, err, dur):
+    def afk_done(shots, err, dur, waiting=None):
         """Пришла проверка АФК-режима: скрины -> таблица (как новая проверка), правила -> уведомления."""
         good = [(p, r) for p, r in shots if r and r.get("kind")]
         if not good:
@@ -935,8 +939,9 @@ def build_pm_tab(parent, afk=False):
         hits = []
         if snap:
             state = pm_afk.load_state()
-            hits = pm_afk.evaluate(snap, cfg["afk_rules"], state, cfg["white"], now)
+            hits = pm_afk.evaluate(snap, cfg["afk_rules"], state, cfg["white"], now, waiting)
             pm_afk.save_state(state)
+            afk_ui["stats"].set("Вызовы: " + (pm_afk.stats_text(state.get("stats")) or "пока нет данных"))
         stamp = time.strftime("%H:%M")
         afk_ui["var"].set(f"АФК: проверка {stamp} за {dur:.0f} с" + (f" (не всё: {err})" if err else "") +
                           (f" · событий: {len(hits)}" if hits else " · событий нет"))
@@ -952,7 +957,9 @@ def build_pm_tab(parent, afk=False):
         tg = [t for r, t in hits if r.get("tg")]
         if tg:
             def send():
-                ok_, m = MW.telegram(f"PM · проверка {stamp}\n" + "\n".join("• " + t for t in tg))
+                st_line = afk_ui["stats"].get()
+                ok_, m = MW.telegram(f"PM · проверка {stamp}\n" + "\n".join("• " + t for t in tg) +
+                                     (f"\n{st_line}" if st_line else ""))
                 if not ok_:
                     q.put(("afk_status", m))
             threading.Thread(target=send, daemon=True).start()
@@ -1003,7 +1010,8 @@ def build_pm_tab(parent, afk=False):
         names = [pm_afk.KEY_NAMES.get(k, k) for k in pm_afk.TABLET_KEYS]
         v_key = tk.StringVar(value=pm_afk.KEY_NAMES.get(a["tablet_key"], a["tablet_key"]))
         v_dept = tk.StringVar(value=a["dept"])
-        v_col, v_calls, v_grp = (tk.BooleanVar(value=a[k]) for k in ("colleagues", "calls", "group"))
+        v_col, v_calls, v_grp, v_onl, v_wait = (tk.BooleanVar(value=a[k]) for k in
+                                                ("colleagues", "calls", "group", "only_online", "waiting"))
         v_idle, v_idle_s = tk.BooleanVar(value=a["idle_guard"]), tk.StringVar(value=str(a["idle_sec"]))
         r = 0
         ttk.Label(dlg, text="Проверять каждые").grid(row=r, column=0, sticky="w", **pad)
@@ -1025,8 +1033,11 @@ def build_pm_tab(parent, afk=False):
         ttk.Label(dlg, text="Что снимать:").grid(row=r, column=0, sticky="nw", **pad)
         f2 = ttk.Frame(dlg)
         f2.grid(row=r, column=1, sticky="w", **pad)
-        ttk.Checkbutton(f2, text="«Коллеги» (до конца списка)", variable=v_col).pack(anchor="w")
-        ttk.Checkbutton(f2, text="«Вызовы» → «История» (за окно «катает» + 2 мин)", variable=v_calls).pack(anchor="w")
+        ttk.Checkbutton(f2, text="«Коллеги»", variable=v_col).pack(anchor="w")
+        ttk.Checkbutton(f2, text="    только кто в сети (сортировка «Статус в сети», дальше не листает)",
+                        variable=v_onl).pack(anchor="w")
+        ttk.Checkbutton(f2, text="«Вызовы» → «История» (за время между проверками + 3 мин)", variable=v_calls).pack(anchor="w")
+        ttk.Checkbutton(f2, text="    «Доступные» - сколько вызовов ждут", variable=v_wait).pack(anchor="w")
         cb = ttk.Checkbutton(f2, text="Группа в телефоне", variable=v_grp)
         cb.pack(anchor="w")
         cb.state(["disabled"])
@@ -1051,6 +1062,7 @@ def build_pm_tab(parent, afk=False):
             a["tablet_key"] = next((k for k in pm_afk.TABLET_KEYS if pm_afk.KEY_NAMES.get(k, k) == v_key.get()), "Down")
             a["dept"] = v_dept.get().strip()
             a["colleagues"], a["calls"], a["group"] = bool(v_col.get()), bool(v_calls.get()), False
+            a["only_online"], a["waiting"] = bool(v_onl.get()), bool(v_wait.get())
             a["idle_guard"] = bool(v_idle.get())
             save_cfg(cfg)
             dlg.destroy()
@@ -1079,7 +1091,8 @@ def build_pm_tab(parent, afk=False):
 
         def ev_text(r_):
             t = pm_afk.EVENTS[r_["event"]]
-            return t + (f" {r_['minutes']} мин" if r_["event"] in pm_afk.TIMED else "")
+            return t + (f" {r_['minutes']} мин" if r_["event"] in pm_afk.TIMED else
+                        f" {r_['minutes']}" if r_["event"] in pm_afk.COUNTED else "")
 
         def fill_():
             tv.delete(*tv.get_children())
@@ -1145,15 +1158,19 @@ def build_pm_tab(parent, afk=False):
         minf = ttk.Frame(dlg)
         minf.grid(row=r, column=3, sticky="w", **pad)
         ttk.Spinbox(minf, from_=1, to=600, width=5, textvariable=v_min).pack(side="left")
-        ttk.Label(minf, text="мин.").pack(side="left", padx=4)
+        unit = ttk.Label(minf, text="мин.")
+        unit.pack(side="left", padx=4)
 
         def ev_changed(e=None):
-            timed = next(k for k, t in pm_afk.EVENTS.items() if t == v_ev.get()) in pm_afk.TIMED
+            ev = next(k for k, t in pm_afk.EVENTS.items() if t == v_ev.get())
+            num = ev in pm_afk.TIMED or ev in pm_afk.COUNTED
+            unit.configure(text="шт." if ev in pm_afk.COUNTED else "мин.")
             for w_ in minf.winfo_children():
-                w_.state(["!disabled"] if timed else ["disabled"])
+                w_.state(["!disabled"] if num else ["disabled"])
         evcb.bind("<<ComboboxSelected>>", ev_changed)
         r += 1
-        ttk.Label(dlg, text="«Не берёт вызовы» - в сети («Сейчас активен»), но ни одного вызова за N минут (нужна «История»).",
+        ttk.Label(dlg, text="«Не берёт вызовы» - в сети («Сейчас активен»), но ни одного вызова за N минут (нужна «История»). "
+                            "«В ожидании» и «непринятых за час» - общие, «кого смотрим» для них не важно.",
                   style="Muted.TLabel", wraplength=560, justify="left").grid(row=r, column=1, columnspan=3, sticky="w", padx=12)
         r += 1
         ttk.Label(dlg, text="Кого смотрим:").grid(row=r, column=0, sticky="nw", **pad)
