@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Забивка досок молотком (работа «Стройка»): бот проходит мини-игру «Ударить молотком». Доску приносишь
+"""Забивка досок молотком (работа «Стройка»): зрение и расчёт удара; интерфейс и поток - stroyka.py. Доску приносишь
 и E у стены жмёшь сам: бот включается, когда справа внизу появилась полоска с бегущей красной меткой,
 и жмёт пробел, когда метка в зелёной зоне.
 
@@ -126,29 +126,54 @@ def travel(p, v, target, a, b):
 
 
 class Tracker:
-    """Скорость и края хода метки по последним кадрам."""
+    """Скорость и место метки: прямая по точкам с последнего разворота (за ~0,25 с), а не по двум соседним снимкам -
+    игра под нагрузкой двигает метку рывками (запись 20261023_003039: между кадрами то 8, то 40 px, в среднем
+    ~375 px/с), и по двум снимкам скорость выходила то нулём, то в разы больше -> удар мимо края зоны."""
+    WIN = 0.25
 
     def __init__(self):
         self.reset()
 
     def reset(self):
         self.hist = []
-        self.speed = 450.0
+        self.speed = 400.0
         self.a, self.b = X_MIN, X_MAX
+        self.x = None
 
     def update(self, now, x):
-        self.hist = [(t, v) for t, v in self.hist if now - t < 0.3] + [(now, x)]
+        self.hist = [(t, v) for t, v in self.hist if now - t < 0.6] + [(now, x)]
         self.a, self.b = min(self.a, x), max(self.b, x)
-        if len(self.hist) < 2:
+        self.x = x
+        h = self.hist
+        if len(h) < 3:
             return None
-        (t1, x1), (t2, x2) = self.hist[-2], self.hist[-1]
-        if t2 - t1 < 1e-3 or abs(x2 - x1) < 0.5:
+        # последний разворот: точка экстремума по ходу
+        xs = np.array([p[1] for p in h])
+        ts = np.array([p[0] for p in h])
+        k = len(xs) - 1
+        d = 0
+        i = k - 1
+        while i >= 0:
+            s = np.sign(xs[i + 1] - xs[i])
+            if s != 0:
+                if d == 0:
+                    d = s
+                elif s != d and abs(xs[i + 1] - xs[i]) > 2:
+                    break
+            i -= 1
+        j0 = max(i + 1, 0)
+        seg = (ts[j0:] >= now - self.WIN)
+        tt, xx = ts[j0:][seg], xs[j0:][seg]
+        if d == 0:
             return None
-        v = (x2 - x1) / (t2 - t1)
-        near_edge = min(x1, x2) - self.a < 25 or self.b - max(x1, x2) < 25
-        if not near_edge and 150 < abs(v) < 1500:       # у края метка развернулась между кадрами - скорость врёт
-            self.speed += (abs(v) - self.speed) * 0.3
-        return self.speed if v > 0 else -self.speed
+        if len(tt) >= 4 and tt[-1] - tt[0] > 0.08 and abs(xx[-1] - xx[0]) > 15:
+            b, a = np.polyfit(tt - now, xx, 1)
+            if 100 < abs(b) < 1500:
+                near_edge = min(xx) - self.a < 20 or self.b - max(xx) < 20
+                if not near_edge or tt[-1] - tt[0] > 0.15:
+                    self.speed += (abs(b) - self.speed) * 0.4
+                self.x = float(a)              # сглаженное место сейчас
+        return self.speed * d
 
 
 def simulate(cfg=None, n=200, seed=0, lat=0.035, frame=0.006, speed=450.0):
@@ -176,7 +201,7 @@ def simulate(cfg=None, n=200, seed=0, lat=0.035, frame=0.006, speed=450.0):
         fire = None
         if vv and t >= cool:
             lead = float(cfg["latency_ms"]) / 1000.0
-            tt = travel(seen, vv, (zone[0] + zone[1]) / 2, tr.a, tr.b)
+            tt = travel(tr.x, vv, (zone[0] + zone[1]) / 2, tr.a, tr.b)
             if tt is not None and tt - lead < 0.012:
                 fire = t + max(0.0, tt - lead)
         if fire is not None:
@@ -190,243 +215,3 @@ def simulate(cfg=None, n=200, seed=0, lat=0.035, frame=0.006, speed=450.0):
             t = fire
         t += frame + rnd.uniform(0, 0.004)
     return hits / tries
-
-
-# ====================================================================== интерфейс и рабочий поток
-def build_hammer_tab(parent, page_name="Стройка"):
-    import tkinter as tk
-    from tkinter import ttk
-    import widgets
-
-    cfg = load_config()
-    q = queue.Queue()
-    ctl = {"active": False, "quit": False, "binding": False, "status": "Выключен"}
-    stats = {"boards": 0, "hits": 0, "view": None, "state": "idle", "last": None}
-    pad = {"padx": 6, "pady": 3}
-
-    def log(m):
-        q.put(("log", m))
-
-    def toggle():
-        if not switches.is_on("hammer") and not ctl["active"]:
-            log(f"Молоток выключен: включи его переключателем наверху страницы «{page_name}»")
-            return
-        ctl["active"] = not ctl["active"]
-
-    status_var, info_var = tk.StringVar(value="Выключен"), tk.StringVar()
-    ttk.Label(parent, textvariable=status_var, style="Status.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-    ttk.Label(parent, textvariable=info_var, style="Muted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", **pad)
-    ttk.Button(parent, text="Старт / стоп", style="Accent.TButton", command=toggle).grid(
-        row=2, column=0, columnspan=4, sticky="ew", **pad)
-    key_var = tk.StringVar(value=vk_name(cfg["toggle_vk"]))
-    ttk.Label(parent, text="Горячая клавиша:").grid(row=3, column=0, sticky="w", **pad)
-    ttk.Label(parent, textvariable=key_var, style="Key.TLabel", width=16).grid(row=3, column=1, sticky="w", **pad)
-
-    def bind_key():
-        ctl["binding"] = True
-        key_var.set("нажми клавишу…")
-
-        def wait():
-            end = time.time() + 6
-            while time.time() < end and not ctl["quit"]:
-                for vk in range(8, 255):
-                    if vk in (0x01, 0x02, 0x04):
-                        continue
-                    if key_pressed(vk):
-                        q.put(("bound", vk))
-                        return
-                time.sleep(0.02)
-            q.put(("bound", None))
-        threading.Thread(target=wait, daemon=True).start()
-    ttk.Button(parent, text="Назначить", command=bind_key).grid(row=3, column=2, sticky="w", **pad)
-
-    box = ttk.LabelFrame(parent, text="Как проходить")
-    box.grid(row=4, column=0, columnspan=4, sticky="ew", **pad)
-    ttk.Label(box, text="Принеси доску и нажми E у стены как обычно: когда справа внизу появится полоска с красной меткой, "
-                        "бот сам будет бить молотком (пробел), когда метка в зелёной зоне.",
-              style="Muted.TLabel", wraplength=720, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", **pad)
-    lat_var = tk.IntVar(value=int(cfg["latency_ms"]))
-    focus_var = tk.BooleanVar(value=cfg["focus_only"])
-    ttk.Label(box, text="Упреждение удара, мс (бьёт мимо в сторону движения метки - меньше, не доходит - больше):").grid(
-        row=1, column=0, sticky="w", **pad)
-    ttk.Spinbox(box, from_=0, to=150, increment=5, width=6, textvariable=lat_var,
-                command=lambda: save()).grid(row=1, column=1, sticky="w", **pad)
-    ttk.Checkbutton(box, text="Только когда активно окно игры", variable=focus_var,
-                    command=lambda: save()).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
-
-    def save():
-        try:
-            cfg["latency_ms"] = max(0, min(150, int(lat_var.get())))
-        except (tk.TclError, ValueError):
-            pass
-        cfg["focus_only"] = bool(focus_var.get())
-        save_config(cfg)
-    lat_var.trace_add("write", lambda *a: save())
-
-    logbox = tk.Text(parent, height=10, width=80, state="disabled", font=("Consolas", 9))
-    logbox.grid(row=5, column=0, columnspan=4, **pad)
-
-    # ---------------- рабочий поток
-    def worker():
-        import ctypes
-        try:
-            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
-        except Exception:
-            pass
-        try:
-            ctypes.windll.winmm.timeBeginPeriod(1)
-        except Exception:
-            pass
-        scr = AF.Screen()
-        inp = AF.Input2()
-        W, H = scr.mon["width"], scr.mon["height"]
-        vis = Vision(W, H)
-        gx0, gy0, gx1, gy1 = sc(GRAB, W, H)
-        tr = Tracker()
-
-        def tap():
-            inp.key("Space", True)
-            time.sleep(0.03)
-            inp.key("Space", False)
-
-        prev = False
-        was = False
-        playing = False
-        last_seen = 0.0
-        game_t0 = 0.0
-        cool_until = 0.0
-        hit_zone = None
-        hits = 0
-        while not ctl["quit"]:
-            if not switches.is_on("hammer"):
-                ctl["active"] = False
-                prev = True
-            elif not ctl["binding"]:
-                k = key_pressed(cfg["toggle_vk"])
-                if k and not prev:
-                    ctl["active"] = not ctl["active"]
-                prev = k
-            if ctl["active"] != was:
-                was = ctl["active"]
-                tr.reset()
-                playing = False
-                log("Молоток включён: жду мини-игру" if was else "Молоток выключен")
-            if not ctl["active"]:
-                BUSY["on"] = False
-                ctl["status"] = "Выключен" if switches.is_on("hammer") else "Выключен (тумблер)"
-                stats["view"] = None
-                time.sleep(0.1)
-                continue
-            if SEWING_BUSY["on"]:
-                ctl["status"] = "Пауза: работает швейный бот"
-                time.sleep(0.2)
-                continue
-            if cfg["focus_only"] and not any(t in AF.foreground_title().lower()
-                                             for t in ("gta", "rage", "majestic", "grand theft")):
-                ctl["status"] = "Пауза: окно игры не активно"
-                time.sleep(0.2)
-                continue
-            now = time.time()
-            try:
-                shot = scr.sct.grab({"left": scr.mon["left"] + gx0, "top": scr.mon["top"] + gy0,
-                                     "width": gx1 - gx0, "height": gy1 - gy0})
-                now = time.time()
-                d = vis.detect(np.asarray(shot)[:, :, :3])
-            except Exception as ex:
-                log(f"Ошибка: {ex}")
-                time.sleep(1)
-                continue
-            if d["active"]:
-                last_seen = now
-                BUSY["on"] = True
-                if not playing:
-                    playing = True
-                    game_t0 = now
-                    tr.reset()
-                    hits = 0
-                    cool_until = now + 0.3
-                    hit_zone = None
-                    log("Мини-игра: бью молотком")
-                v = tr.update(now, d["x"])
-                z = d["zone"]
-                # зона не переехала после удара - ждём (иначе второй удар по той же зоне)
-                same = hit_zone is not None and abs(z[0] - hit_zone[0]) < 4 and abs(z[1] - hit_zone[1]) < 4
-                if same and now < cool_until + 0.6:
-                    v = None
-                if v and now >= cool_until:
-                    lead = float(cfg["latency_ms"]) / 1000.0
-                    mid = (z[0] + z[1]) / 2.0
-                    tt = travel(d["x"], v, mid, tr.a, tr.b)
-                    if tt is not None and tt - lead < 0.015:
-                        wait = tt - lead - (time.time() - now)
-                        if wait > 0:
-                            time.sleep(wait)
-                        tap()
-                        hits += 1
-                        stats["hits"] += 1
-                        hit_zone = z
-                        cool_until = time.time() + COOLDOWN
-                ctl["status"] = "Бью молотком"
-                stats["state"] = "play"
-                stats["view"] = {"x": d["x"], "zone": z}
-                time.sleep(0.001)
-            else:
-                if playing and now - last_seen > 0.6:
-                    playing = False
-                    BUSY["on"] = False
-                    dur = last_seen - game_t0
-                    if dur > 2:
-                        stats["boards"] += 1
-                        stats["last"] = dur
-                        log(f"Доска прибита: {hits} ударов за {dur:.1f} с")
-                    else:
-                        log("Мини-игра закрылась раньше времени")
-                    stats["state"] = "idle"
-                    stats["view"] = None
-                if not playing:
-                    BUSY["on"] = False
-                    ctl["status"] = "Жду мини-игру (принеси доску и нажми E)"
-                time.sleep(0.03)
-        BUSY["on"] = False
-        try:
-            ctypes.windll.winmm.timeEndPeriod(1)
-        except Exception:
-            pass
-
-    threading.Thread(target=worker, daemon=True).start()
-
-    def pump():
-        try:
-            while True:
-                m = q.get_nowait()
-                if m[0] == "log":
-                    logbox.configure(state="normal")
-                    logbox.insert("end", time.strftime("%H:%M:%S ") + m[1] + "\n")
-                    logbox.see("end")
-                    logbox.configure(state="disabled")
-                elif m[0] == "bound":
-                    ctl["binding"] = False
-                    if m[1]:
-                        cfg["toggle_vk"] = m[1]
-                        save_config(cfg)
-                    key_var.set(vk_name(cfg["toggle_vk"]))
-        except queue.Empty:
-            pass
-        except tk.TclError:
-            return
-        status_var.set(ctl["status"])
-        info_var.set(f"Досок прибито: {stats['boards']}   ·   ударов: {stats['hits']}"
-                     + (f"   ·   последняя за {stats['last']:.1f} с" if stats["last"] else ""))
-        if not ctl["quit"]:
-            parent.after(200, pump)
-
-    def provider():
-        return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Досок", "view": stats["view"],
-                "state": stats["state"], "last": stats["last"],
-                "items": [("Досок", stats["boards"]), ("Ударов", stats["hits"])]}
-    widgets.register("hammer", provider)
-    parent.after(200, pump)
-
-    def stop():
-        ctl["quit"] = True
-    return stop

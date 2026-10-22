@@ -414,7 +414,7 @@ class HomePage(tk.Canvas):
                 return lab[0], col, ""
             items = d.get("items") or [("", 0)]
             unit = {"fish": "поймано", "bot": "комплектов", "afk": "нажатий", "sand": "досок", "wood": "деревьев", "mine": "камней", "gym": "подходов", "farm": "деревьев",
-                    "build": "досок"}.get(key, "")
+                    "build": "работ"}.get(key, "")
             metric = f"{items[0][1]} {unit}"
             st = str(d.get("status", ""))
             if d.get("active"):
@@ -493,15 +493,13 @@ class HomePage(tk.Canvas):
             import stats
         except Exception:
             stats = None
-        order = [k for k in ("fish", "bot", "wood", "mine", "gym", "farm", "afk") if k in locked_ok]
-        if "build" in locked_ok:
-            order += ["sand", "lift", "hammer"]
+        order = [k for k in ("fish", "bot", "wood", "mine", "gym", "farm", "build", "afk") if k in locked_ok]
         if stats and order:
             ys = y
             self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
             y += 24
             labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев",
-                      "lift": "Подъёмов лифта", "hammer": "Досок прибито"}
+                      "build": "Работ на стройке"}
             cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
             secs = sum(stats.get(k)["secs"] for k in order)
             cells.append(("#time", "Время работы", secs))

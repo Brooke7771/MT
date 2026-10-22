@@ -49,7 +49,7 @@ PAGES = [  # (ключ, значок, название, подзаголовок
     ("mine", "⛏", "Шахта", "Добычу и сбор руды в мини-игре бот проходит сам: к камню подходишь и жмёшь E ты"),
     ("gym", "✊", "Качалка", "Упражнения бот делает сам: жмёт E и буквы W/A/S/D из кружков; к тренажёру встаёшь ты"),
     ("farm", "❀", "Ферма", "Апельсины в мини-игре бот собирает сам: к дереву подходишь и жмёшь E ты"),
-    ("build", "⚒", "Стройка", "Шлифовка, грузовой лифт и молоток: мини-игры бот проходит сам, E жмёшь ты"),
+    ("build", "⚒", "Стройка", "Один бот на всю стройку: сам узнаёт шлифовку, грузовой лифт и молоток; E жмёшь ты"),
     ("fish", "⚓", "Рыбалка", "Полный цикл: E, заброс в зелёную зону, подсечка, вываживание A/D, улов"),
 ]
 
@@ -128,8 +128,7 @@ def main():
     holder.pack(fill="both", expand=True, padx=16, pady=(0, 10))
     pages = {}
     test_state = {"key": None}               # какой бот выбран на странице «Тест»
-    build_state = {"key": None}              # ... и на странице «Стройка»
-    packs = {"test": test_state, "build": build_state}
+    packs = {"test": test_state}
     HOME = ("home", "⌂", "Главная", "Обзор: состояние ключа, память и быстрые переходы")
     ADMIN = ("admin", "🔑", "Админка", "Создание и управление ключами")
     PAGES_ALL = [HOME] + PAGES + [ADMIN]
@@ -249,17 +248,13 @@ def main():
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
     TEST_BOTS = [("click", "Кликер", "clicker", "build_clicker_tab")]
-    # «Стройка» - пак ботов одной работы, доступ ключа build
-    BUILD_BOTS = [("sand", "Шлифовка", "sanding", "build_sand_tab"),
-                  ("lift", "Лифт", "lift", "build_lift_tab"),
-                  ("hammer", "Молоток", "hammer", "build_hammer_tab")]
-    PACKS = {"test": TEST_BOTS, "build": BUILD_BOTS}
-    names.update(sand="Шлифовка", click="Кликер", lift="Лифт", hammer="Молоток")
+    PACKS = {"test": TEST_BOTS}
+    names["click"] = "Кликер"
 
     def _bundle():
-        """Не вызывается: модули ботов «Теста»/«Стройки» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
-        Новый бот в TEST_BOTS / BUILD_BOTS - дописать и сюда."""
-        import sanding, clicker, lift, hammer  # noqa: F401
+        """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
+        Новый бот в TEST_BOTS - дописать и сюда."""
+        import clicker  # noqa: F401
 
     def make_pack(pkey):
         """Страница-пак («Тест», «Стройка»): сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""
@@ -324,6 +319,9 @@ def main():
         if key == "farm":
             import farm
             return farm.build_farm_tab(pages["farm"])
+        if key == "build":
+            import stroyka
+            return stroyka.build_stroyka_tab(pages["build"])
         import fishing
         return fishing.build_fishing_tab(pages["fish"])
 

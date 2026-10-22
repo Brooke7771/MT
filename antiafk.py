@@ -1117,10 +1117,8 @@ def build_antiafk_tab(parent):
                 fishing_busy = fishing_busy or gym.BUSY["on"]
                 import farm
                 fishing_busy = fishing_busy or farm.BUSY["on"]
-                import lift
-                fishing_busy = fishing_busy or lift.BUSY["on"]
-                import hammer
-                fishing_busy = fishing_busy or hammer.BUSY["on"]
+                import stroyka
+                fishing_busy = fishing_busy or stroyka.BUSY["on"]
             except Exception:
                 pass
             try:

@@ -717,7 +717,7 @@ def shots_root():
 def other_bot_busy():
     """Работает другой бот (швейка, рыбалка, ...) - планшет не трогаем."""
     import importlib
-    for m in ("sewing_bot", "fishing", "woodcut", "mining", "gym", "farm", "sanding", "lift", "hammer", "clicker"):
+    for m in ("sewing_bot", "fishing", "woodcut", "mining", "gym", "farm", "stroyka", "clicker"):
         try:
             if importlib.import_module(m).BUSY["on"]:
                 return m

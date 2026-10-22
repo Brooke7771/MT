@@ -14,9 +14,9 @@ def app_dir():
 
 PATH = os.path.join(app_dir(), "modules_config.json")
 NAMES = {"bot": "Швейный бот", "afk": "Анти-АФК", "fish": "Рыбалка", "sand": "Шлифовка", "click": "Кликер", "wood": "Лесоруб",
-         "mine": "Шахта", "gym": "Качалка", "farm": "Ферма", "rec": "Запись", "lift": "Лифт", "hammer": "Молоток"}
+         "mine": "Шахта", "gym": "Качалка", "farm": "Ферма", "rec": "Запись", "build": "Стройка"}
 ENABLED = {"bot": True, "afk": False, "fish": False, "sand": False, "click": False, "wood": False,
-           "mine": False, "gym": False, "farm": False, "rec": True, "lift": False, "hammer": False}     # новые боты по умолчанию выключены; запись - включена, как была
+           "mine": False, "gym": False, "farm": False, "rec": True, "build": False}     # новые боты по умолчанию выключены; запись - включена, как была
 _listeners = []
 
 try:
