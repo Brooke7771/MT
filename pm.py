@@ -41,7 +41,8 @@ def save_cfg(c):
         pass
 
 
-def build_pm_tab(parent):
+def build_pm_tab(parent, afk=False):
+    """afk=True - с АФК-режимом (бот сам достаёт планшет и снимает скрины; только в основной программе)."""
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
     import theme as T
@@ -91,6 +92,22 @@ def build_pm_tab(parent):
     ttk.Button(bar2, text="Настроить фильтр…", command=lambda: filter_dialog()).pack(side="left", padx=4)
     white_btn = ttk.Button(bar2, text="Вайтлист…", command=lambda: white_dialog())
     white_btn.pack(side="left", padx=4)
+    afk_ui = {}
+    if afk:
+        import pm_afk
+        cfg["afk"] = pm_afk.afk_cfg(cfg.get("afk"))
+        if not isinstance(cfg.get("afk_rules"), list):
+            cfg["afk_rules"] = pm_afk.default_rules()
+        save_cfg(cfg)
+        bar3 = ttk.Frame(parent)
+        bar3.pack(fill="x", padx=8, pady=(0, 4))
+        afk_ui["btn"] = ttk.Button(bar3, text="АФК-режим: выкл", command=lambda: afk_toggle())
+        afk_ui["btn"].pack(side="left")
+        ttk.Button(bar3, text="Проверить сейчас", command=lambda: afk_ui["run"].check_now()).pack(side="left", padx=4)
+        ttk.Button(bar3, text="Настройки АФК…", command=lambda: afk_settings()).pack(side="left", padx=4)
+        ttk.Button(bar3, text="Правила наблюдения…", command=lambda: rules_dialog()).pack(side="left", padx=4)
+        afk_ui["var"] = tk.StringVar(value="АФК-режим выключен: бот сам достаёт планшет и снимает скрины по таймеру")
+        ttk.Label(bar3, textvariable=afk_ui["var"], style="Muted.TLabel").pack(side="left", padx=10)
     msg = tk.StringVar(value=("Добавь скрины «Коллеги», «Вызовы» (История) и группы в телефоне. Можно несколько: они склеятся."
                               if ok else "⚠ " + ocr_msg))
     ttk.Label(parent, textvariable=msg, style="Muted.TLabel" if ok else "Warn.TLabel").pack(anchor="w", padx=10)
@@ -868,6 +885,11 @@ def build_pm_tab(parent):
                     st["watch_seen"].add(m[1])
                     add_paths([m[1]])
                     msg.set(f"Скрин сохранён: {m[1]}")
+                elif m[0] == "afk_status":
+                    if afk_ui:
+                        afk_ui["var"].set(m[1])
+                elif m[0] == "afk":
+                    afk_done(m[1], m[2], m[3])
                 elif m[0] == "folder":
                     folder_lbl.configure(text=short(m[1]))
                 elif m[0] == "done":
@@ -886,6 +908,306 @@ def build_pm_tab(parent):
                 watch_tick()
             parent.after(200, pump)
 
+    # ================================================================ АФК-режим (только основная программа)
+    def afk_toggle():
+        run = afk_ui["run"]
+        run.set_on(not run.on)
+        afk_ui["btn"].configure(text="АФК-режим: ВКЛ" if run.on else "АФК-режим: выкл",
+                                style="Accent.TButton" if run.on else "TButton")
+
+    def afk_done(shots, err, dur):
+        """Пришла проверка АФК-режима: скрины -> таблица (как новая проверка), правила -> уведомления."""
+        good = [(p, r) for p, r in shots if r and r.get("kind")]
+        if not good:
+            afk_ui["var"].set(f"АФК: проверка не удалась - {err or 'нет скринов'}")
+            return
+        prev_snap = st["snap"]
+        now = time.time()
+        st["shots"][:] = [{"path": p, "name": os.path.basename(os.path.dirname(p)) + "/" + os.path.basename(p),
+                           "res": r, "state": "", "t": now} for p, r in good]
+        st["edits"].clear()
+        st["base"] = st["roster"]
+        if prev_snap:
+            st["old"], st["old_label"] = prev_snap, "прошлая проверка"
+        shots_refresh()
+        rebuild()
+        snap = st["snap"]
+        hits = []
+        if snap:
+            state = pm_afk.load_state()
+            hits = pm_afk.evaluate(snap, cfg["afk_rules"], state, cfg["white"], now)
+            pm_afk.save_state(state)
+        stamp = time.strftime("%H:%M")
+        afk_ui["var"].set(f"АФК: проверка {stamp} за {dur:.0f} с" + (f" (не всё: {err})" if err else "") +
+                          (f" · событий: {len(hits)}" if hits else " · событий нет"))
+        if hits:
+            afk_notify(hits, stamp)
+
+    def afk_notify(hits, stamp):
+        import market_watch as MW
+        if any(r.get("popup") for r, _ in hits):
+            afk_popup([t for r, t in hits if r.get("popup")], stamp)
+        if any(r.get("sound") for r, _ in hits):
+            MW.play_sound("beep")
+        tg = [t for r, t in hits if r.get("tg")]
+        if tg:
+            def send():
+                ok_, m = MW.telegram(f"PM · проверка {stamp}\n" + "\n".join("• " + t for t in tg))
+                if not ok_:
+                    q.put(("afk_status", m))
+            threading.Thread(target=send, daemon=True).start()
+
+    def afk_popup(lines, stamp):
+        """Окно поверх всех, которое НЕ забирает фокус у игры (иначе следующая проверка ждала бы игру)."""
+        old = afk_ui.get("pop")
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(parent)
+        afk_ui["pop"] = w
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=T.ACCENT)
+        inner = tk.Frame(w, bg=T.CARD)
+        inner.pack(fill="both", expand=True, padx=2, pady=2)
+        head = tk.Frame(inner, bg=T.CARD)
+        head.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(head, text=f"PM · проверка {stamp}", bg=T.CARD, fg=T.TEXT, font=("Segoe UI", 11, "bold")).pack(side="left")
+        tk.Button(head, text="✕", command=w.destroy, bg=T.CARD, fg=T.MUTED, relief="flat", bd=0,
+                  activebackground=T.CARD, font=("Segoe UI", 11)).pack(side="right")
+        more = len(lines) - 12
+        tk.Label(inner, text="\n".join("• " + t for t in lines[:12]) + (f"\n… и ещё {more}" if more > 0 else ""),
+                 bg=T.CARD, fg=T.TEXT, justify="left", font=("Segoe UI", 10), wraplength=440).pack(
+            anchor="w", padx=14, pady=(0, 12))
+        w.update_idletasks()
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        w.geometry(f"+{sw - w.winfo_reqwidth() - 24}+{sh - w.winfo_reqheight() - 80}")
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(w.winfo_id()) or w.winfo_id()
+            ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000 | 0x80 | 0x8)   # без фокуса, без панели задач
+        except Exception:
+            pass
+
+    def afk_settings():
+        a = cfg["afk"]
+        dlg = tk.Toplevel(parent)
+        dlg.title("АФК-режим: настройки")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        pad = {"padx": 12, "pady": 4}
+        v_int = tk.StringVar(value=str(a["interval"]))
+        names = [pm_afk.KEY_NAMES.get(k, k) for k in pm_afk.TABLET_KEYS]
+        v_key = tk.StringVar(value=pm_afk.KEY_NAMES.get(a["tablet_key"], a["tablet_key"]))
+        v_dept = tk.StringVar(value=a["dept"])
+        v_col, v_calls, v_grp = (tk.BooleanVar(value=a[k]) for k in ("colleagues", "calls", "group"))
+        v_idle, v_idle_s = tk.BooleanVar(value=a["idle_guard"]), tk.StringVar(value=str(a["idle_sec"]))
+        r = 0
+        ttk.Label(dlg, text="Проверять каждые").grid(row=r, column=0, sticky="w", **pad)
+        f1 = ttk.Frame(dlg)
+        f1.grid(row=r, column=1, sticky="w", **pad)
+        ttk.Spinbox(f1, from_=2, to=240, width=5, textvariable=v_int).pack(side="left")
+        ttk.Label(f1, text="мин.").pack(side="left", padx=4)
+        r += 1
+        ttk.Label(dlg, text="Клавиша планшета:").grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(dlg, textvariable=v_key, values=names, state="readonly", width=16).grid(row=r, column=1, sticky="w", **pad)
+        r += 1
+        ttk.Label(dlg, text="Отдел в «Коллеги»:").grid(row=r, column=0, sticky="w", **pad)
+        ttk.Combobox(dlg, textvariable=v_dept, values=[""] + cfg.get("depts_seen", []), width=16).grid(
+            row=r, column=1, sticky="w", **pad)
+        r += 1
+        ttk.Label(dlg, text="пусто - все отделы (дольше: весь список)", style="Muted.TLabel").grid(
+            row=r, column=1, sticky="w", padx=12)
+        r += 1
+        ttk.Label(dlg, text="Что снимать:").grid(row=r, column=0, sticky="nw", **pad)
+        f2 = ttk.Frame(dlg)
+        f2.grid(row=r, column=1, sticky="w", **pad)
+        ttk.Checkbutton(f2, text="«Коллеги» (до конца списка)", variable=v_col).pack(anchor="w")
+        ttk.Checkbutton(f2, text="«Вызовы» → «История» (за окно «катает» + 2 мин)", variable=v_calls).pack(anchor="w")
+        cb = ttk.Checkbutton(f2, text="Группа в телефоне", variable=v_grp)
+        cb.pack(anchor="w")
+        cb.state(["disabled"])
+        ttk.Label(f2, text="группа - пока нет: пришли запись, как открываешь её в телефоне", style="Muted.TLabel").pack(anchor="w")
+        r += 1
+        f3 = ttk.Frame(dlg)
+        f3.grid(row=r, column=0, columnspan=2, sticky="w", **pad)
+        ttk.Checkbutton(f3, text="Не начинать проверку, если я трогал клавиатуру/мышь последние", variable=v_idle).pack(side="left")
+        ttk.Spinbox(f3, from_=10, to=600, increment=10, width=5, textvariable=v_idle_s).pack(side="left", padx=4)
+        ttk.Label(f3, text="с").pack(side="left")
+        r += 1
+        ttk.Label(dlg, text="Проверка идёт, только когда игра на переднем плане; во время неё анти-АФК стоит на паузе.\n"
+                            "Планшет бот закрывает сам; если что-то пошло не так - закрывает и пробует в следующий раз.",
+                  style="Muted.TLabel", justify="left").grid(row=r, column=0, columnspan=2, sticky="w", **pad)
+
+        def ok_():
+            try:
+                a["interval"] = max(2, min(240, int(float(v_int.get()))))
+                a["idle_sec"] = max(10, min(600, int(float(v_idle_s.get()))))
+            except ValueError:
+                pass
+            a["tablet_key"] = next((k for k in pm_afk.TABLET_KEYS if pm_afk.KEY_NAMES.get(k, k) == v_key.get()), "Down")
+            a["dept"] = v_dept.get().strip()
+            a["colleagues"], a["calls"], a["group"] = bool(v_col.get()), bool(v_calls.get()), False
+            a["idle_guard"] = bool(v_idle.get())
+            save_cfg(cfg)
+            dlg.destroy()
+        r += 1
+        ttk.Button(dlg, text="Сохранить", style="Accent.TButton", command=ok_).grid(
+            row=r, column=0, columnspan=2, sticky="ew", padx=12, pady=10)
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
+
+    def rules_dialog():
+        dlg = tk.Toplevel(parent)
+        dlg.title("Правила наблюдения")
+        dlg.configure(bg=T.BG)
+        dlg.transient(parent.winfo_toplevel())
+        ttk.Label(dlg, text="Правило = кого смотрим + что ловим. После каждой АФК-проверки сработавшие правила "
+                            "присылают уведомление (одно на случай, пока он длится).", style="Muted.TLabel",
+                  wraplength=760, justify="left").pack(anchor="w", padx=12, pady=(10, 4))
+        tv = ttk.Treeview(dlg, columns=("on", "name", "ev", "who", "how"), show="headings", height=9, selectmode="browse")
+        for c, h, w_ in (("on", "Вкл", 44), ("name", "Название", 190), ("ev", "Событие", 200), ("who", "Кого", 180),
+                         ("how", "Куда", 130)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w_, anchor="center" if c == "on" else "w")
+        tv.pack(fill="both", expand=True, padx=12, pady=4)
+
+        def ev_text(r_):
+            t = pm_afk.EVENTS[r_["event"]]
+            return t + (f" {r_['minutes']} мин" if r_["event"] in pm_afk.TIMED else "")
+
+        def fill_():
+            tv.delete(*tv.get_children())
+            for r_ in cfg["afk_rules"]:
+                how = ", ".join(n for k, n in (("popup", "окно"), ("sound", "звук"), ("tg", "Telegram")) if r_.get(k)) or "-"
+                tv.insert("", "end", iid=r_["id"], values=("✓" if r_["on"] else "—", r_["name"], ev_text(r_),
+                                                           pm_afk.who_text(r_["who"]), how))
+
+        def sel_():
+            s_ = tv.selection()
+            return next((r_ for r_ in cfg["afk_rules"] if s_ and r_["id"] == s_[0]), None)
+
+        def toggle_():
+            r_ = sel_()
+            if r_:
+                r_["on"] = not r_["on"]
+                save_cfg(cfg)
+                fill_()
+
+        def delete_():
+            r_ = sel_()
+            if r_ and messagebox.askyesno("Правило", f"Удалить «{r_['name']}»?", parent=dlg):
+                cfg["afk_rules"].remove(r_)
+                save_cfg(cfg)
+                fill_()
+        bar_ = ttk.Frame(dlg)
+        bar_.pack(fill="x", padx=12, pady=(4, 10))
+        ttk.Button(bar_, text="Добавить…", style="Accent.TButton", command=lambda: rule_edit(None, fill_, dlg)).pack(side="left")
+        ttk.Button(bar_, text="Изменить…", command=lambda: sel_() and rule_edit(sel_(), fill_, dlg)).pack(side="left", padx=4)
+        ttk.Button(bar_, text="Вкл / выкл", command=toggle_).pack(side="left", padx=4)
+        ttk.Button(bar_, text="Удалить", command=delete_).pack(side="left", padx=4)
+        tv.bind("<Double-1>", lambda e: sel_() and rule_edit(sel_(), fill_, dlg))
+        fill_()
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
+
+    def rule_edit(rule, done, owner):
+        r_ = rule or pm_afk.new_rule("Новое правило", "no_calls", 20)
+        who = r_["who"]
+        dlg = tk.Toplevel(owner)
+        dlg.title("Правило")
+        dlg.configure(bg=T.BG)
+        dlg.transient(owner)
+        dlg.grab_set()
+        pad = {"padx": 12, "pady": 4}
+        v_name = tk.StringVar(value=r_["name"])
+        v_ev = tk.StringVar(value=pm_afk.EVENTS[r_["event"]])
+        v_min = tk.StringVar(value=str(r_["minutes"]))
+        v_white = tk.BooleanVar(value=who.get("white_only"))
+        v_uids = tk.StringVar(value=who.get("uids", ""))
+        v_depts = tk.StringVar(value=", ".join(who.get("depts", [])))
+        v_r1, v_r2 = tk.StringVar(value=str(who.get("rank_min", ""))), tk.StringVar(value=str(who.get("rank_max", "")))
+        v_ch = {k: tk.BooleanVar(value=r_.get(k, True)) for k in ("popup", "sound", "tg")}
+        r = 0
+        ttk.Label(dlg, text="Название:").grid(row=r, column=0, sticky="w", **pad)
+        ttk.Entry(dlg, textvariable=v_name, width=34).grid(row=r, column=1, columnspan=3, sticky="w", **pad)
+        r += 1
+        ttk.Label(dlg, text="Что ловим:").grid(row=r, column=0, sticky="w", **pad)
+        evcb = ttk.Combobox(dlg, textvariable=v_ev, values=list(pm_afk.EVENTS.values()), state="readonly", width=30)
+        evcb.grid(row=r, column=1, columnspan=2, sticky="w", **pad)
+        minf = ttk.Frame(dlg)
+        minf.grid(row=r, column=3, sticky="w", **pad)
+        ttk.Spinbox(minf, from_=1, to=600, width=5, textvariable=v_min).pack(side="left")
+        ttk.Label(minf, text="мин.").pack(side="left", padx=4)
+
+        def ev_changed(e=None):
+            timed = next(k for k, t in pm_afk.EVENTS.items() if t == v_ev.get()) in pm_afk.TIMED
+            for w_ in minf.winfo_children():
+                w_.state(["!disabled"] if timed else ["disabled"])
+        evcb.bind("<<ComboboxSelected>>", ev_changed)
+        r += 1
+        ttk.Label(dlg, text="«Не берёт вызовы» - в сети («Сейчас активен»), но ни одного вызова за N минут (нужна «История»).",
+                  style="Muted.TLabel", wraplength=560, justify="left").grid(row=r, column=1, columnspan=3, sticky="w", padx=12)
+        r += 1
+        ttk.Label(dlg, text="Кого смотрим:").grid(row=r, column=0, sticky="nw", **pad)
+        wf = ttk.Frame(dlg)
+        wf.grid(row=r, column=1, columnspan=3, sticky="w", **pad)
+        ttk.Checkbutton(wf, text="только вайтлист", variable=v_white).grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(wf, text="статики или ники:").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Entry(wf, textvariable=v_uids, width=36).grid(row=1, column=1, columnspan=3, sticky="w", padx=6)
+        ttk.Label(wf, text="отделы:").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(wf, textvariable=v_depts, width=16).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(wf, text="ранг от").grid(row=2, column=2, sticky="e")
+        rf = ttk.Frame(wf)
+        rf.grid(row=2, column=3, sticky="w", padx=6)
+        ttk.Entry(rf, textvariable=v_r1, width=4).pack(side="left")
+        ttk.Label(rf, text="до").pack(side="left", padx=4)
+        ttk.Entry(rf, textvariable=v_r2, width=4).pack(side="left")
+        ttk.Label(wf, text="через запятую; пустые поля - без ограничения (все сотрудники со скринов)",
+                  style="Muted.TLabel").grid(row=3, column=0, columnspan=4, sticky="w")
+        r += 1
+        ttk.Label(dlg, text="Куда сообщать:").grid(row=r, column=0, sticky="w", **pad)
+        cf = ttk.Frame(dlg)
+        cf.grid(row=r, column=1, columnspan=3, sticky="w", **pad)
+        for k, t in (("popup", "окно поверх игры"), ("sound", "звук"), ("tg", "Telegram (бот из «Готовки»)")):
+            ttk.Checkbutton(cf, text=t, variable=v_ch[k]).pack(side="left", padx=(0, 10))
+
+        def ok_():
+            r_["name"] = v_name.get().strip() or "Правило"
+            r_["event"] = next(k for k, t in pm_afk.EVENTS.items() if t == v_ev.get())
+            try:
+                r_["minutes"] = max(1, int(float(v_min.get())))
+            except ValueError:
+                pass
+            r_["who"] = {"white_only": bool(v_white.get()), "uids": v_uids.get().strip(),
+                         "depts": [d.strip().upper() for d in v_depts.get().split(",") if d.strip()],
+                         "rank_min": v_r1.get().strip(), "rank_max": v_r2.get().strip()}
+            for k, var in v_ch.items():
+                r_[k] = bool(var.get())
+            if rule is None:
+                cfg["afk_rules"].append(r_)
+            save_cfg(cfg)
+            done()
+            dlg.destroy()
+        r += 1
+        ttk.Button(dlg, text="Сохранить", style="Accent.TButton", command=ok_).grid(
+            row=r, column=0, columnspan=4, sticky="ew", padx=12, pady=10)
+        ev_changed()
+        try:
+            T.dark_titlebar(dlg)
+        except Exception:
+            pass
+
+    if afk:
+        afk_ui["run"] = pm_afk.Runner(lambda: cfg["afk"], window, q.put)
+
     def provider():
         s = dict(STATE)
         return {"active": False, "label": (s["busy"] and "Распознаю…" or ("Готов" if s["ok"] else "Нет OCR"),
@@ -897,6 +1219,8 @@ def build_pm_tab(parent):
     def stop():
         st["alive"] = False
         work.put(None)
+        if afk_ui.get("run"):
+            afk_ui["run"].stop()
 
     bases_refresh()
     if watch_var.get() and folder["path"]:

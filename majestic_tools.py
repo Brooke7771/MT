@@ -382,7 +382,7 @@ def main():
         failed(pages["market"], "Рынок", ex)
     try:
         import pm
-        stops.append(pm.build_pm_tab(pages["pm"]))
+        stops.append(pm.build_pm_tab(pages["pm"], afk=True))
     except Exception as ex:
         failed(pages["pm"], "PM", ex)
     try:

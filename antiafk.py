@@ -105,6 +105,14 @@ class Input2:
         ii.mi = MouseInput(dx, dy, 0, flags, 0, ctypes.pointer(extra))
         self._send(Input(ctypes.c_ulong(0), ii))
 
+    def wheel(self, notches):
+        """Колёсико мыши: notches > 0 - вниз (к концу списка), < 0 - вверх."""
+        self.log.append(("wheel", notches))
+        extra = ctypes.c_ulong(0)
+        ii = InputI()
+        ii.mi = MouseInput(0, 0, (-120 * int(notches)) & 0xFFFFFFFF, 0x0800, 0, ctypes.pointer(extra))
+        self._send(Input(ctypes.c_ulong(0), ii))
+
     def move_to(self, x, y):
         self.log.append(("move_to", x, y))
         if self.live:
@@ -1111,9 +1119,15 @@ def build_antiafk_tab(parent):
                 fishing_busy = fishing_busy or farm.BUSY["on"]
             except Exception:
                 pass
-            if SEWING_BUSY["on"] or fishing_busy:
+            try:
+                import pm_afk
+                pm_busy = pm_afk.BUSY["on"]
+            except Exception:
+                pm_busy = False
+            if SEWING_BUSY["on"] or fishing_busy or pm_busy:
                 e.pause(now)
-                ctl["status"] = "Пауза: работает " + ("швейный бот" if SEWING_BUSY["on"] else "рыбалка")
+                ctl["status"] = "Пауза: работает " + ("швейный бот" if SEWING_BUSY["on"] else
+                                                      "АФК-проверка PM" if pm_busy else "рыбалка")
             elif not game_focused():
                 e.pause(now)
                 ctl["status"] = "Пауза: окно игры не активно"
