@@ -49,7 +49,8 @@ PROGRESS_Y, PROGRESS_X = 757, (862, 1226)
 HINT_BOXES = [(1610, 1032, 1636, 1058),   # A
               (1697, 1032, 1723, 1058),   # Space
               (1872, 1032, 1898, 1058)]   # D
-E_BOX = (104, 29, 130, 55)
+E_BOX = (20, 5, 330, 80)    # где искать подсказку «Нажмите [E] чтобы начать шить» (белая клавиша E ~26 px;
+                            # раньше стояла в (104,29)-(130,55), в игре v1.48 сдвинулась на (90,20)-(117,45))
 
 OFFSET_GAIN_L = 28.0      # px: насколько резко подтягиваться к линии сбоку
 FEEDFORWARD_T = 0.25      # с: упреждение поворота по кривизне
@@ -668,7 +669,19 @@ def game_visible(img, g, off):
 
 
 def prompt_visible(img, g, off):
-    return white_frac(img, g.ebox, off) > 0.5
+    """Белая квадратная клавиша (E) в области подсказки - ищем её саму, а не жёсткую рамку:
+    игра двигала подсказку, и бот переставал жать E."""
+    x0, y0, x1, y1 = g.ebox
+    a = img[y0 - off[1]:y1 - off[1], x0 - off[0]:x1 - off[0]]
+    if a.size == 0:
+        return False
+    m = (a.min(axis=2) > 200).astype(np.uint8)
+    n, _, st, _ = cv2.connectedComponentsWithStats(m)
+    lo, hi = 18 * g.s, 36 * g.s
+    for x, y, w, h, area in st[1:n]:
+        if lo <= w <= hi and lo <= h <= hi and abs(w - h) <= 6 * g.s and area >= 0.6 * w * h:
+            return True
+    return False
 
 
 # ================================================================ бот
