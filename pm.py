@@ -173,7 +173,8 @@ def build_pm_tab(parent, afk=False):
         t.pack(fill="both", expand=True, pady=4)
         return t
     diff_txt = text_box(tabs["diff"])
-    f_txt = text_box(tabs["f"])
+    import pm_ftext
+    ftab = pm_ftext.build_f_tab(tabs["f"], cfg, save_cfg, lambda m: msg.set(m))
 
     # ---- низ: действия
     bot = ttk.Frame(parent)
@@ -184,7 +185,7 @@ def build_pm_tab(parent, afk=False):
     ttk.Label(bot, text="мин. (0 - все на скринах)").pack(side="left")
     for text, cmd in (("Копировать таблицу", lambda: copy(PT.table_text(view(st["snap"])) if st["snap"] else "")),
                       ("Копировать изменения", lambda: copy(diff_txt.get("1.0", "end").strip())),
-                      ("Копировать /f", lambda: copy(f_txt.get("1.0", "end").strip()))):
+                      ("Копировать /f", lambda: ftab.copy_all())):
         ttk.Button(bot, text=text, command=cmd).pack(side="left", padx=(10, 0))
     ttk.Button(bot, text="Сохранить снимок", style="Accent.TButton", command=lambda: save_snap()).pack(side="right")
     ttk.Button(bot, text="Сбросить брифинг", command=lambda: reset_brief()).pack(side="right", padx=(0, 6))
@@ -422,7 +423,7 @@ def build_pm_tab(parent, afk=False):
             for w in (et, ct):
                 w.delete(*w.get_children())
             diff_txt.delete("1.0", "end")
-            f_txt.delete("1.0", "end")
+            ftab.refresh(None)
             STATE.update(n=0, online=0, calls=0, ask=0, changes=0)
             return
         snap = PT.merge(results, window())
@@ -480,8 +481,7 @@ def build_pm_tab(parent, afk=False):
                                                     c["reason"], c["status"], c["date"]))
         diff_txt.delete("1.0", "end")
         diff_txt.insert("1.0", PT.changes_text(snap, old, st["old_label"]))
-        f_txt.delete("1.0", "end")
-        f_txt.insert("1.0", PT.f_text(snap))
+        ftab.refresh(snap)
         emps = snap["employees"].values()
         online = [e for e in emps if e["status"] in pm_ocr.ONLINE]
         STATE.update(n=len(snap["employees"]), online=len(online), calls=sum(1 for e in online if e.get("on_calls")),
@@ -1236,6 +1236,7 @@ def build_pm_tab(parent, afk=False):
 
     def stop():
         st["alive"] = False
+        ftab.stop()
         work.put(None)
         if afk_ui.get("run"):
             afk_ui["run"].stop()
