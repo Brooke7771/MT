@@ -27,7 +27,13 @@ DEPT_OPEN = (1448, 203)              # открыть список
 DEPT_ITEM0, DEPT_STEP, DEPT_ITEMS = 251, 48, 4   # пункты списка: центр первого, шаг, сколько видно
 MENU_WORDS = {"Коллеги": (320, 420), "Учёт": (320, 420), "Управление": (320, 420), "Настройки": (320, 420),
               "Премирование": (570, 670), "Вызовы": (570, 670), "Черный": (570, 670)}
-MENU_ICON = {"Коллеги": (497, 292), "Вызовы": (729, 543)}   # значки в меню EMS (если подпись не прочиталась)
+MENU_ICON = {"Коллеги": (497, 292), "Вызовы": (729, 543), "Управление": (960, 292)}   # значки в меню EMS
+BAL_SEARCH = (760, 205)              # «Управление балансом»: поле поиска
+BAL_TABLE = (360, 190, 1560, 975)    # строка поиска + таблица (запись 20261023_210704)
+BAL_ROW0, BAL_PITCH = 315, 45        # центр первой строки таблицы, шаг строк
+BAL_DATE_X, BAL_NAME_X1, BAL_UID_X = 1380, 580, (585, 660)
+BAL_DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})\s*(\d{1,2}):(\d{2})")
+LOOKALIKE = str.maketrans("АВЕКМНОРСТХаеорсухкмтнвђјЬ", "ABEKMHOPCTXaeopcyxkmtHBhjb")
 SORT_STATUS = (1450, 269)            # заголовок «Статус в сети» - сортировка
 AVAIL_TAB, HIST_TAB = (697, 130), (837, 130)   # вкладки «Доступные» / «История» в вызовах
 WAIT_BTN = (830, 250, 925, 985)      # красные кнопки причины в карточках ожидающих вызовов
@@ -344,6 +350,8 @@ class Tablet:
             return "colleagues", ws
         if self.find(ws, "Вызовы", y1=165, x1=600):
             return ("history" if self.find(ws, "Сотрудник", 245, 305) else "calls"), ws
+        if self.find(ws, "Пополнить", y1=165) or self.find(ws, "транзакции", 250, 300):
+            return "balance", ws
         labels = [n for n, (y0, y1) in MENU_WORDS.items() if self.find(ws, n, y0, y1)]
         if len(labels) >= 2:                                        # OCR иногда теряет одно слово
             return "menu", ws
@@ -633,6 +641,106 @@ class Tablet:
             self.sleep(0.7)
         return len(ids)
 
+    # ---- «Управление балансом»: кто что делал (лечил, продавал таблетки) и когда
+    def balance_rows(self, img):
+        """-> (что в поиске, [{"name", "uid", "type", "date": datetime}]) с экрана «Управление балансом»."""
+        from datetime import datetime
+        ws = self.words(img, BAL_TABLE, lang="ru", scale=1.5)
+        rows, query = {}, []
+        for w in ws:
+            cy = w[2] + w[4] / 2
+            if cy < BAL_ROW0 - BAL_PITCH * 1.5:
+                if w[1] < 1300:
+                    query.append(w)
+                continue
+            r = round((cy - BAL_ROW0 - 7) / BAL_PITCH)
+            if r >= 0:
+                rows.setdefault(r, []).append(w)
+        out = []
+        for r in sorted(rows):
+            line = sorted(rows[r], key=lambda w: w[1])
+            m = BAL_DATE.search(" ".join(w[0] for w in line if w[1] >= BAL_DATE_X))
+            if not m:
+                continue
+            d, mo, y, h, mi = (int(v) for v in m.groups())
+            try:
+                dt = datetime(y, mo, d, h, mi)
+            except ValueError:
+                continue
+            uid = "".join(ch for w in line if BAL_UID_X[0] <= w[1] <= BAL_UID_X[1] for ch in w[0] if ch.isdigit())
+            out.append({"name": " ".join(w[0] for w in line if w[1] < BAL_NAME_X1), "uid": uid,
+                        "type": " ".join(w[0] for w in line if 700 <= w[1] < 1000), "date": dt})
+        return " ".join(w[0] for w in sorted(query, key=lambda w: w[1]) if not _like(w[0], "Q")), out
+
+    @staticmethod
+    def _same_person(row, uid, name):
+        if uid and row.get("uid") and row["uid"] == str(uid):
+            return True
+        from difflib import SequenceMatcher
+        a = (row.get("name") or "").translate(LOOKALIKE).lower()
+        return SequenceMatcher(None, a, (name or "").translate(LOOKALIKE).lower()).ratio() >= 0.6
+
+    def balance(self, people, minutes=30, shift=0):
+        """people: [(uid, ник)] -> {uid: {"name", "last": "ДД.ММ.ГГГГ ЧЧ:ММ" | None, "ago": мин | None,
+        "n": действий за minutes, "types": {тип: сколько}, "shot": путь}}. Время таблицы - часы сервера:
+        shift - на сколько они впереди часов ПК (из АФК-проверок, tz_shift)."""
+        import antiafk as AF
+        import pm_ftext
+        res = {}
+        try:
+            s, ws = self.open()
+            if s != "balance":
+                ws = self.to_menu(s, ws)
+                s, ws = self.section(ws, "Управление", ("balance",))
+            self.settle_balance(None, None)
+            for i, (uid, name) in enumerate(people):
+                self.log(f"Баланс: {name} ({i + 1}/{len(people)})")
+                self.click(*BAL_SEARCH, 0.25)
+                self.inp.key("Ctrl", True)
+                self.inp.tap("A", 40)
+                self.inp.key("Ctrl", False)
+                self.inp.tap("Backspace", 40)
+                self.sleep(0.15)
+                pm_ftext.type_text(name)
+                img, rows = self.settle_balance(uid, name)
+                now = time.time()
+                mine = [r for r in rows if self._same_person(r, uid, name)]
+                types, n = {}, 0
+                for r in mine:
+                    ago = (now - (r["date"].timestamp() - shift)) / 60
+                    if ago <= minutes:
+                        n += 1
+                        t = r["type"].split("#")[0].strip() or "?"
+                        types[t] = types.get(t, 0) + 1
+                last = mine[0]["date"] if mine else None
+                res[uid] = {"name": name, "last": last.strftime("%d.%m.%Y %H:%M") if last else None,
+                            "ago": round((now - (last.timestamp() - shift)) / 60) if last else None,
+                            "n": n, "full": n >= len(mine) and len(mine) >= 14, "types": types,
+                            "shot": self.save(img)}
+            self.click(*BAL_SEARCH, 0.2)                       # поиск очистить - в следующий раз таблица полная
+            self.inp.key("Ctrl", True)
+            self.inp.tap("A", 40)
+            self.inp.key("Ctrl", False)
+            self.inp.tap("Backspace", 40)
+        finally:
+            self.close()
+        return res
+
+    def settle_balance(self, uid, name, timeout=7.0):
+        """Ждём, пока таблица покажет этого человека (или пустая) и два снимка подряд одинаковые."""
+        t_end = time.time() + timeout
+        prev, img, rows = None, None, []
+        while time.time() < t_end:
+            img = self.shot()
+            q, rows = self.balance_rows(img)
+            key = tuple((r["name"], r["date"]) for r in rows[:4])
+            ok = name is None or (rows and self._same_person(rows[0], uid, name))
+            if ok and key == prev:
+                return img, rows
+            prev = key if ok else None
+            self.sleep(0.6)
+        return img, rows                                   # долго грузится или записей нет
+
     def run(self):
         """Полный проход -> [(путь, результат recognize)]; self.waiting - сколько вызовов ждут (или None).
         Abort - что-то пошло не так (планшет закрывается)."""
@@ -751,7 +859,12 @@ class Runner:
         self.on, self.force, self.alive = False, False, True
         self.next_t = None
         self.running = False
+        self.bal_req = None              # (люди, минут) - проверка по «Управлению балансом»
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def balance_now(self, people, minutes=30):
+        self.bal_req = (list(people), minutes)
+        self.post(("afk_status", f"Баланс: проверю {len(people)} чел. - переключись в игру"))
 
     def set_on(self, on):
         self.on = bool(on)
@@ -781,6 +894,19 @@ class Runner:
         last_status = None
         while self.alive:
             time.sleep(0.5)
+            if self.bal_req:
+                cfg = self.get_cfg()
+                why = self._wait_reason(cfg)
+                if why:
+                    if why != last_status:
+                        self.post(("afk_status", "Баланс: " + why))
+                        last_status = why
+                    time.sleep(1)
+                    continue
+                req, self.bal_req = self.bal_req, None
+                self._balance(cfg, *req)
+                last_status = None
+                continue
             if not (self.on or self.force):
                 continue
             cfg = self.get_cfg()
@@ -802,6 +928,51 @@ class Runner:
             self._round(cfg, forced)
             last_status = None
             self.next_t = time.time() + max(1, float(cfg["interval"])) * 60
+
+    def _balance(self, cfg, people, minutes):
+        import antiafk as AF
+        import mss
+        from PIL import Image
+        try:
+            import ctypes
+            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+        d = os.path.join(shots_root(), "balance_" + time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(d, exist_ok=True)
+        sct = mss.mss()
+        n = {"i": 0}
+
+        def grab():
+            raw = sct.grab(sct.monitors[1])
+            return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+
+        def save(img):
+            n["i"] += 1
+            p = os.path.join(d, f"{n['i']:02d}.png")
+            img.save(p)
+            return p
+        BUSY["on"] = True
+        self.running = True
+        err, res, t0 = "", {}, time.time()
+        try:
+            time.sleep(0.6)
+            tab = Tablet(cfg, AF.Input2(), grab, lambda m: self.post(("afk_status", m)), save,
+                         lambda: any(t in AF.foreground_title().lower() for t in GAME_TITLES),
+                         stop=lambda: not self.alive)
+            res = tab.balance(people, minutes, load_state().get("tz_shift", 0))
+        except Abort as ex:
+            err = str(ex)
+        except Exception as ex:
+            err = f"ошибка: {ex}"
+        finally:
+            BUSY["on"] = False
+            self.running = False
+            try:
+                sct.close()
+            except Exception:
+                pass
+        self.post(("balance", res, err, time.time() - t0, d))
 
     def _round(self, cfg, forced=False):
         import antiafk as AF

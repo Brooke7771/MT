@@ -18,10 +18,13 @@ DEFAULT_TEMPLATES = [
     {"name": "Взять вызов", "text": "/f {name}, возьмите, пожалуйста, вызов - на вас никто не катает."},
     {"name": "Нет на месте", "text": "/f {name}, вы отмечены «Нет на месте». Вы на связи?"},
     {"name": "Коротко", "text": "/f {first}, на связь"},
+    {"name": "Отчёт о работе", "text": "/f {name}, прошу предоставить отчёт о проделанной работе за последние 30 минут: в спец. связь, в личные сообщения или во флуд нашего отдела с тегом {me}."},
 ]
+REPORT_TPL = {"name": "Отчёт о работе", "text": "/f {name}, прошу предоставить отчёт о проделанной работе за последние 30 минут: в спец. связь, в личные сообщения или во флуд нашего отдела с тегом {me}."}
 PLACEHOLDERS = [("{name}", "ник полностью"), ("{first}", "имя (первое слово ника)"), ("{uid}", "статик"),
                 ("{rank}", "ранг"), ("{dept}", "отдел"), ("{status}", "статус («Сейчас активен» ...)"),
-                ("{calls}", "вызовов на скринах"), ("{num}", "номер в очереди"), ("{time}", "время сейчас ЧЧ:ММ")]
+                ("{calls}", "вызовов на скринах"), ("{num}", "номер в очереди"), ("{time}", "время сейчас ЧЧ:ММ"),
+                ("{me}", "твой ник (поле «Мой ник»)")]
 CHAT_KEYS = {"T": 0x14, "Y": 0x15, "U": 0x16, "Enter": 0x1C, "F6": 0x40, "`": 0x29}
 HOTKEYS = {0: "выкл", 0x77: "F8", 0x78: "F9", 0x79: "F10", 0x7A: "F11", 0x2D: "Insert", 0x24: "Home",
            0x23: "End", 0x21: "PageUp", 0x22: "PageDown", 0x13: "Pause", 0x6E: "Numpad .", 0x6F: "Numpad /"}
@@ -40,14 +43,20 @@ def fill_cfg(cfg):
     cfg.setdefault("f_method", "paste")
     cfg.setdefault("f_hotkey", 0)
     cfg.setdefault("f_restore_clip", True)
+    cfg.setdefault("f_me", "")
+    cfg.setdefault("f_skip_working", True)
+    if int(cfg.get("f_tpl_v", 1)) < 2:              # шаблон «Отчёт о работе» появился в pm-v1.6.0
+        if not any("отчёт" in t.get("text", "").lower() for t in cfg["f_templates"]):
+            cfg["f_templates"].append(dict(REPORT_TPL))
+        cfg["f_tpl_v"] = 2
     return cfg
 
 
-def render(tpl, e, uid, num):
+def render(tpl, e, uid, num, me=""):
     name = e.get("name") or ""
     vals = {"name": name, "first": name.split()[0] if name.split() else name, "uid": uid or "",
             "rank": e.get("rank") or "", "dept": e.get("dept") or "", "status": PT.status_text(e),
-            "calls": e.get("calls") or 0, "num": num, "time": datetime.now().strftime("%H:%M")}
+            "calls": e.get("calls") or 0, "num": num, "time": datetime.now().strftime("%H:%M"), "me": me}
     out = tpl
     for k, v in vals.items():
         out = out.replace("{" + k + "}", str(v))
@@ -216,6 +225,17 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     ttk.Checkbutton(top2, text="Сейчас активен", variable=who_a, command=lambda: who_changed()).pack(side="left")
     ttk.Checkbutton(top2, text="Нет на месте", variable=who_w, command=lambda: who_changed()).pack(side="left", padx=4)
     ttk.Button(top2, text="+ Своя строка", command=lambda: add_line()).pack(side="right")
+    sel_btn = ttk.Button(top2, text="Шаблон выбранным ▾", command=lambda: tpl_popup(widget=sel_btn))
+    sel_btn.pack(side="right", padx=4)
+    top3 = ttk.Frame(frame)
+    top3.pack(fill="x", pady=(0, 2))
+    skip_var = tk.BooleanVar(value=cfg["f_skip_working"])
+    ttk.Checkbutton(top3, text="Не писать тем, кто работал (проверка по балансу)", variable=skip_var,
+                    command=lambda: (cfg.update(f_skip_working=bool(skip_var.get())), save(), rebuild())).pack(side="left")
+    me_var = tk.StringVar(value=cfg["f_me"])
+    ttk.Entry(top3, textvariable=me_var, width=18).pack(side="right")
+    ttk.Label(top3, text="Мой ник (для {me}):").pack(side="right", padx=(8, 4))
+    me_var.trace_add("write", lambda *a: (cfg.update(f_me=me_var.get().strip()), save_cfg(cfg), rebuild()))
 
     # ---- очередь
     mid = ttk.Frame(frame)
@@ -260,24 +280,35 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     run_var = tk.StringVar()
     ttk.Label(c1b, textvariable=run_var, style="Muted.TLabel").pack(side="left", padx=10)
 
-    c2 = ttk.Frame(frame)
-    c2.pack(fill="x", pady=2)
-    ttk.Label(c2, text="Чат - клавиша:").pack(side="left")
+    ttk.Button(c1, text="⚙ Отправка…", command=lambda: send_settings()).pack(side="right")
+    ttk.Button(c1b, text="всё", command=lambda: copy_all()).pack(side="right")
+    ttk.Button(c1b, text="выбранные", command=lambda: copy_sel()).pack(side="right", padx=4)
+    ttk.Button(c1b, text="следующее", command=lambda: copy_cur()).pack(side="right")
+    ttk.Label(c1b, text="Копировать:").pack(side="right", padx=(0, 4))
     key_var = tk.StringVar(value=cfg["f_chat_key"])
-    ttk.Combobox(c2, textvariable=key_var, values=list(CHAT_KEYS), state="readonly", width=6).pack(side="left", padx=4)
-    ttk.Label(c2, text="ввод:").pack(side="left", padx=(8, 0))
     meth_var = tk.StringVar(value={"paste": "вставкой (Ctrl+V)", "type": "печатью"}[cfg["f_method"]])
-    ttk.Combobox(c2, textvariable=meth_var, values=["вставкой (Ctrl+V)", "печатью"], state="readonly",
-                 width=16).pack(side="left", padx=4)
-    ttk.Label(c2, text="«Следующее» клавишей:").pack(side="left", padx=(8, 0))
     hk_var = tk.StringVar(value=HOTKEYS.get(cfg["f_hotkey"], "выкл"))
-    ttk.Combobox(c2, textvariable=hk_var, values=list(HOTKEYS.values()), state="readonly", width=9).pack(side="left", padx=4)
-    c3 = ttk.Frame(frame)
-    c3.pack(fill="x", pady=2)
-    ttk.Label(c3, text="Копировать:").pack(side="left")
-    ttk.Button(c3, text="следующее", command=lambda: copy_cur()).pack(side="left", padx=4)
-    ttk.Button(c3, text="выбранные", command=lambda: copy_sel()).pack(side="left")
-    ttk.Button(c3, text="весь список", command=lambda: copy_all()).pack(side="left", padx=4)
+
+    def send_settings():
+        d = tk.Toplevel(frame)
+        d.title("Отправка в чат")
+        d.configure(bg=T.BG)
+        d.transient(frame.winfo_toplevel())
+        g = ttk.Frame(d)
+        g.pack(padx=14, pady=12)
+        for i, (lab, var, vals, w) in enumerate((("Чат открывается клавишей:", key_var, list(CHAT_KEYS), 8),
+                                                 ("Ввод текста:", meth_var, ["вставкой (Ctrl+V)", "печатью"], 18),
+                                                 ("«Отправить следующее» клавишей:", hk_var, list(HOTKEYS.values()), 10))):
+            ttk.Label(g, text=lab).grid(row=i, column=0, sticky="w", pady=4)
+            ttk.Combobox(g, textvariable=var, values=vals, state="readonly", width=w).grid(row=i, column=1, sticky="w", padx=8)
+        ttk.Label(g, text="Если чат открывается, а текст не появляется - выбери «печатью». Горячей клавишей удобно "
+                          "слать прямо из игры.", style="Muted.TLabel", wraplength=380, justify="left").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(d, text="Готово", style="Accent.TButton", command=d.destroy).pack(anchor="e", padx=14, pady=(0, 12))
+        try:
+            T.dark_titlebar(d)
+        except Exception:
+            pass
 
     info_var = tk.StringVar()
     info_lbl = ttk.Label(frame, textvariable=info_var, style="Muted.TLabel", wraplength=600, justify="left")
@@ -310,9 +341,16 @@ def build_f_tab(frame, cfg, save_cfg, msg):
                 if (s == "active" and not cfg["f_who"].get("active", True)) or \
                         (s == "away" and not cfg["f_who"].get("away", True)):
                     continue
+                b = e.get("bal") or {}
+                if b.get("n") and cfg.get("f_skip_working", True):
+                    continue
                 key = "u:" + (uid or e.get("name", ""))
-                text = st["override"].get(key) or render(tpl_away if s == "away" else tpl, e, uid, len(rows) + 1)
-                rows.append({"key": key, "who": e.get("name") or "?", "status": PT.status_text(e), "text": text})
+                text = st["override"].get(key) or render(tpl_away if s == "away" else tpl, e, uid, len(rows) + 1,
+                                                         cfg.get("f_me", ""))
+                status = PT.status_text(e)
+                if b:
+                    status += f" · баланс: {b['n']} действ." if b.get("n") else " · баланс: пусто"
+                rows.append({"key": key, "who": e.get("name") or "?", "status": status, "text": text, "e": e, "uid": uid})
         for i, t in enumerate(st["extra"]):
             key = f"x:{i}"
             rows.append({"key": key, "who": "своя строка", "status": "", "text": st["override"].get(key) or t})
@@ -541,6 +579,39 @@ def build_f_tab(frame, cfg, save_cfg, msg):
                    command=remove).pack(side="right", padx=6)
     tv.bind("<Double-1>", edit_row)
 
+    tpl_menu = tk.Menu(tv, tearoff=0, bg=T.PANEL, fg=T.TEXT, activebackground=T.ACCENT, activeforeground="#ffffff", bd=0)
+
+    def apply_tpl(j):
+        """Шаблон j - выбранным строкам (только на этот раз: в очереди меняется их текст)."""
+        t = cfg["f_templates"][j]["text"]
+        for iid in tv.selection():
+            r = st["rows"][int(iid)]
+            if r.get("e") is not None:
+                st["override"][r["key"]] = render(t, r["e"], r.get("uid"), int(iid) + 1, cfg.get("f_me", ""))
+        rebuild()
+
+    def tpl_popup(event=None, widget=None):
+        if event is not None:
+            iid = tv.identify_row(event.y)
+            if iid and iid not in tv.selection():
+                tv.selection_set(iid)
+        if not tv.selection():
+            msg("Выдели строки (Ctrl/Shift + щелчок), потом выбери шаблон")
+            return
+        tpl_menu.delete(0, "end")
+        tpl_menu.add_command(label=f"Шаблон для выбранных ({len(tv.selection())}):", state="disabled")
+        for j, t in enumerate(cfg["f_templates"]):
+            tpl_menu.add_command(label=t["name"], command=lambda j=j: apply_tpl(j))
+        tpl_menu.add_separator()
+        tpl_menu.add_command(label="Вернуть основной", command=lambda: (
+            [st["override"].pop(st["rows"][int(i)]["key"], None) for i in tv.selection()], rebuild()))
+        if event is not None:
+            tpl_menu.tk_popup(event.x_root, event.y_root)
+        else:
+            w = widget
+            tpl_menu.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
+    tv.bind("<Button-3>", tpl_popup)
+
     def edit_templates():
         d = tk.Toplevel(frame)
         d.title("Шаблоны /f")
@@ -581,7 +652,7 @@ def build_f_tab(frame, cfg, save_cfg, msg):
 
         def upd_prev(*a):
             e, uid = sample()
-            prev.set("Пример: " + render(tx.get("1.0", "end").strip(), e, uid, 1))
+            prev.set("Пример: " + render(tx.get("1.0", "end").strip(), e, uid, 1, cfg.get("f_me") or "Твой Ник"))
         tx.bind("<KeyRelease>", upd_prev)
 
         def load_list():
