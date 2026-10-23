@@ -140,6 +140,7 @@ def main():
         if ram_cleaner.psutil is None:
             raise RuntimeError("не найдена библиотека psutil")
         stops.append(ram_cleaner.build_ram_tab(pages["ram"], key_bar=False))
+        T.stretch_logs(pages["ram"])
     except Exception as ex:
         failed(pages["ram"], "Чистильщик", ex)
 

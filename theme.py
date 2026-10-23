@@ -458,3 +458,33 @@ def stripe(tree):
     """Цвета строк таблицы: чередование и "готово"."""
     tree.tag_configure("odd", background=FIELD_ALT)
     tree.tag_configure("done", foreground=OK)
+
+
+def stretch_logs(w):
+    """Страницы ботов (сетка из 3-4 колонок, внизу журнал фиксированной ширины): журнал - на всю ширину и до низа
+    страницы, карточки и кнопки на несколько колонок - тоже на всю ширину (последняя колонка забирает лишнее место).
+    Зовётся один раз после сборки вкладки; страницы на pack не трогает."""
+    import tkinter as tk
+    for c in w.winfo_children():
+        stretch_logs(c)
+    if not isinstance(w, tk.Text) or w.winfo_manager() != "grid":
+        return
+    info = w.grid_info()
+    span = int(info.get("columnspan", 1))
+    if span < 3:
+        return
+    par = w.master
+    c0, last = int(info["column"]), int(info["column"]) + span - 1
+    busy = any(int(g.grid_info().get("columnspan", 1)) == 1 and int(g.grid_info()["column"]) == last
+               for g in par.grid_slaves())
+    if busy:                       # в последней колонке свои кнопки - растягиваем лишнюю пустую колонку справа
+        for g in par.grid_slaves():
+            gi = g.grid_info()
+            if int(gi["column"]) == c0 and int(gi.get("columnspan", 1)) == span:
+                g.grid_configure(columnspan=span + 1)
+        last += 1
+    par.columnconfigure(last, weight=1)
+    par.rowconfigure(int(info["row"]), weight=1)
+    w.grid_configure(sticky="nsew", pady=(6, 8))
+    w.configure(bg=FIELD, fg=TEXT, padx=10, pady=8, borderwidth=0, highlightthickness=1,
+                highlightbackground=BORDER, highlightcolor=BORDER, spacing1=1, spacing3=1, cursor="arrow")

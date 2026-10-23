@@ -208,20 +208,22 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     away_cb = ttk.Combobox(top, textvariable=away_var, state="readonly", width=20)
     away_cb.pack(side="left", padx=4)
     ttk.Button(top, text="Шаблоны…", command=lambda: edit_templates()).pack(side="left", padx=4)
+    top2 = ttk.Frame(frame)
+    top2.pack(fill="x", pady=(0, 2))
     who_a = tk.BooleanVar(value=cfg["f_who"].get("active", True))
     who_w = tk.BooleanVar(value=cfg["f_who"].get("away", True))
-    ttk.Label(top, text="Кому:").pack(side="left", padx=(12, 2))
-    ttk.Checkbutton(top, text="Активен", variable=who_a, command=lambda: who_changed()).pack(side="left")
-    ttk.Checkbutton(top, text="Нет на месте", variable=who_w, command=lambda: who_changed()).pack(side="left", padx=4)
-    ttk.Button(top, text="+ Своя строка", command=lambda: add_line()).pack(side="right")
+    ttk.Label(top2, text="Кому:").pack(side="left", padx=(0, 2))
+    ttk.Checkbutton(top2, text="Сейчас активен", variable=who_a, command=lambda: who_changed()).pack(side="left")
+    ttk.Checkbutton(top2, text="Нет на месте", variable=who_w, command=lambda: who_changed()).pack(side="left", padx=4)
+    ttk.Button(top2, text="+ Своя строка", command=lambda: add_line()).pack(side="right")
 
     # ---- очередь
     mid = ttk.Frame(frame)
     mid.pack(fill="both", expand=True, pady=2)
     cols = ("n", "who", "status", "text", "sent")
     tv = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
-    for c, h, w, a, s in (("n", "№", 40, "e", False), ("who", "Кому", 170, "w", False), ("status", "Статус", 120, "w", False),
-                          ("text", "Текст", 520, "w", True), ("sent", "Отправка", 110, "w", False)):
+    for c, h, w, a, s in (("n", "№", 36, "e", False), ("who", "Кому", 150, "w", False), ("status", "Статус", 110, "w", False),
+                          ("text", "Текст", 300, "w", True), ("sent", "Отправка", 96, "w", False)):
         tv.heading(c, text=h)
         tv.column(c, width=w, anchor=a, stretch=s)
     sb = ttk.Scrollbar(mid, orient="vertical", command=tv.yview)
@@ -238,6 +240,7 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     nxt = tk.Label(frame, textvariable=nxt_var, bg=T.CARD, fg=T.TEXT, anchor="w", justify="left",
                    font=("Segoe UI", 10, "bold"), padx=10, pady=6, wraplength=900)
     nxt.pack(fill="x", pady=(4, 2))
+    nxt.bind("<Configure>", lambda e: nxt.configure(wraplength=max(200, e.width - 24)))
 
     # ---- управление отправкой
     c1 = ttk.Frame(frame)
@@ -246,18 +249,20 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     ttk.Button(c1, text="Пропустить", command=lambda: skip()).pack(side="left", padx=4)
     ttk.Button(c1, text="⟲ С начала", command=lambda: restart()).pack(side="left")
     ttk.Button(c1, text="Отсюда", command=lambda: from_selected()).pack(side="left", padx=4)
-    run_btn = ttk.Button(c1, text="▶ Прогнать весь список", command=lambda: toggle_run())
-    run_btn.pack(side="left", padx=(12, 4))
-    ttk.Label(c1, text="каждые").pack(side="left")
+    c1b = ttk.Frame(frame)
+    c1b.pack(fill="x", pady=2)
+    run_btn = ttk.Button(c1b, text="▶ Прогнать весь список", command=lambda: toggle_run())
+    run_btn.pack(side="left", padx=(0, 6))
+    ttk.Label(c1b, text="каждые").pack(side="left")
     int_var = tk.StringVar(value=str(cfg["f_interval"]))
-    ttk.Spinbox(c1, from_=2, to=600, width=5, textvariable=int_var).pack(side="left", padx=3)
-    ttk.Label(c1, text="с").pack(side="left")
+    ttk.Spinbox(c1b, from_=2, to=600, width=5, textvariable=int_var).pack(side="left", padx=3)
+    ttk.Label(c1b, text="с").pack(side="left")
     run_var = tk.StringVar()
-    ttk.Label(c1, textvariable=run_var, style="Muted.TLabel").pack(side="left", padx=10)
+    ttk.Label(c1b, textvariable=run_var, style="Muted.TLabel").pack(side="left", padx=10)
 
     c2 = ttk.Frame(frame)
     c2.pack(fill="x", pady=2)
-    ttk.Label(c2, text="Чат открывается клавишей:").pack(side="left")
+    ttk.Label(c2, text="Чат - клавиша:").pack(side="left")
     key_var = tk.StringVar(value=cfg["f_chat_key"])
     ttk.Combobox(c2, textvariable=key_var, values=list(CHAT_KEYS), state="readonly", width=6).pack(side="left", padx=4)
     ttk.Label(c2, text="ввод:").pack(side="left", padx=(8, 0))
@@ -267,12 +272,17 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     ttk.Label(c2, text="«Следующее» клавишей:").pack(side="left", padx=(8, 0))
     hk_var = tk.StringVar(value=HOTKEYS.get(cfg["f_hotkey"], "выкл"))
     ttk.Combobox(c2, textvariable=hk_var, values=list(HOTKEYS.values()), state="readonly", width=9).pack(side="left", padx=4)
-    ttk.Button(c2, text="Копировать всё", command=lambda: copy_all()).pack(side="right")
-    ttk.Button(c2, text="Копировать выбранные", command=lambda: copy_sel()).pack(side="right", padx=4)
-    ttk.Button(c2, text="Копировать следующее", command=lambda: copy_cur()).pack(side="right")
+    c3 = ttk.Frame(frame)
+    c3.pack(fill="x", pady=2)
+    ttk.Label(c3, text="Копировать:").pack(side="left")
+    ttk.Button(c3, text="следующее", command=lambda: copy_cur()).pack(side="left", padx=4)
+    ttk.Button(c3, text="выбранные", command=lambda: copy_sel()).pack(side="left")
+    ttk.Button(c3, text="весь список", command=lambda: copy_all()).pack(side="left", padx=4)
 
     info_var = tk.StringVar()
-    ttk.Label(frame, textvariable=info_var, style="Muted.TLabel", wraplength=1000, justify="left").pack(fill="x", pady=(2, 0))
+    info_lbl = ttk.Label(frame, textvariable=info_var, style="Muted.TLabel", wraplength=600, justify="left")
+    info_lbl.pack(fill="x", pady=(2, 0))
+    info_lbl.bind("<Configure>", lambda e: info_lbl.configure(wraplength=max(200, e.width - 10)))
 
     # ================================================================ данные
     def tpl_names():

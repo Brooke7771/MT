@@ -109,7 +109,7 @@ def build_pm_tab(parent, afk=False):
         ttk.Button(bar3, text="Настройки АФК…", command=lambda: afk_settings()).pack(side="left", padx=4)
         ttk.Button(bar3, text="Правила наблюдения…", command=lambda: rules_dialog()).pack(side="left", padx=4)
         afk_ui["var"] = tk.StringVar(value="АФК-режим выключен: бот сам достаёт планшет и снимает скрины по таймеру")
-        ttk.Label(bar3, textvariable=afk_ui["var"], style="Muted.TLabel").pack(side="left", padx=10)
+        ttk.Label(parent, textvariable=afk_ui["var"], style="Muted.TLabel").pack(anchor="w", padx=10)
         afk_ui["stats"] = tk.StringVar(value=pm_afk.stats_text(pm_afk.load_state().get("stats")))
         ttk.Label(parent, textvariable=afk_ui["stats"], style="Muted.TLabel").pack(anchor="w", padx=10)
     msg = tk.StringVar(value=("Добавь скрины «Коллеги», «Вызовы» (История) и группы в телефоне. Можно несколько: они склеятся."

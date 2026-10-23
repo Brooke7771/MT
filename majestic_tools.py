@@ -275,6 +275,7 @@ def main():
             order.append(tkey)
             try:
                 stops_.append(getattr(__import__(mod), fn)(fr))
+                T.stretch_logs(fr)
             except Exception as ex:
                 failed(fr, title, ex)
         switches.listen(lambda k, val: root.after(0, lambda: k in vars_ and vars_[k].set(bool(val))))
@@ -354,6 +355,7 @@ def main():
                     w.destroy()
                 try:
                     st = make_tab(key)
+                    T.stretch_logs(pages[key])
                     built[key] = st
                     stops.append(st)
                 except Exception as ex:
@@ -371,6 +373,7 @@ def main():
         if ram_cleaner.psutil is None:
             raise RuntimeError("не найдена библиотека psutil")
         stops.append(ram_cleaner.build_ram_tab(pages["ram"]))
+        T.stretch_logs(pages["ram"])
     except Exception as ex:
         failed(pages["ram"], "Чистильщик", ex)
     try:

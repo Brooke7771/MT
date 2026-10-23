@@ -498,28 +498,43 @@ class HomePage(tk.Canvas):
             ys = y
             self.create_text(4, y + 8, text="ЗА ВСЁ ВРЕМЯ", anchor="w", fill=DIM, font=("Segoe UI", 8, "bold"))
             y += 24
-            labels = {"fish": "Поймано рыб", "bot": "Комплектов", "afk": "Нажатий", "sand": "Досок отшлифовано", "wood": "Деревьев", "mine": "Камней", "gym": "Подходов", "farm": "Деревьев",
-                      "build": "Работ на стройке"}
-            cells = [(k, labels[k], stats.get(k)["count"]) for k in order]
+            # (раздел, что считаем): подпись - название бота, под числом - единица
+            labels = {"fish": ("Рыбалка", "рыб"), "bot": ("Швейка", "комплектов"), "afk": ("Анти-АФК", "нажатий"),
+                      "wood": ("Лесоруб", "деревьев"), "mine": ("Шахта", "камней"), "gym": ("Качалка", "подходов"),
+                      "farm": ("Ферма", "деревьев"), "build": ("Стройка", "работ")}
+            cells = [(k, *labels[k], stats.get(k)["count"]) for k in order]
             secs = sum(stats.get(k)["secs"] for k in order)
-            cells.append(("#time", "Время работы", secs))
-            gap = 14
-            cw = (W - 4 - gap * (len(cells) - 1)) / len(cells)
-            for i, (k, lab, val) in enumerate(cells):
-                x0 = 2 + i * (cw + gap)
+            cells.append(("#time", "Время работы", "всеми ботами", secs))
+            gap, ch = 14, 78
+            per = max(1, min(len(cells), int((W - 4 + gap) // (150 + gap))))     # карточка не уже 150 px
+            rows = (len(cells) + per - 1) // per
+            if not hasattr(self, "_fl"):
+                import tkinter.font as tkfont
+                self._fl = tkfont.Font(family="Segoe UI", size=8, weight="bold")
+            for i, (k, lab, unit, val) in enumerate(cells):
+                r_, c_ = divmod(i, per)
+                n_row = min(per, len(cells) - r_ * per)
+                cw = (W - 4 - gap * (n_row - 1)) / n_row
+                x0 = 2 + c_ * (cw + gap)
+                yy = y + r_ * (ch + gap)
                 cur = self.sv.get(k, 0.0)
                 cur = val if abs(val - cur) < 0.6 else cur + (val - cur) * 0.12
                 self.sv[k] = cur
-                _rrect(self, x0, y, x0 + cw, y + 78, 14, fill=CARD, outline=EDGE)
-                self.create_rectangle(x0 + 1, y + 16, x0 + 4, y + 62, fill=T.ACCENT, outline="")
-                self.create_text(x0 + 20, y + 20, text=lab.upper(), anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
+                _rrect(self, x0, yy, x0 + cw, yy + ch, 14, fill=CARD, outline=EDGE)
+                self.create_rectangle(x0 + 1, yy + 16, x0 + 4, yy + 62, fill=T.ACCENT, outline="")
+                lab = lab.upper()
+                while len(lab) > 3 and self._fl.measure(lab) > cw - 30:
+                    lab = lab[:-2] + "…"
+                self.create_text(x0 + 20, yy + 18, text=lab, anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
                 if k == "#time":
                     s = int(cur)
                     txt = f"{s // 3600} ч {s // 60 % 60} мин" if s >= 3600 else f"{s // 60} мин"
                 else:
                     txt = f"{int(round(cur)):,}".replace(",", " ")
-                self.create_text(x0 + 20, y + 49, text=txt, anchor="w", fill="#ffffff", font=("Segoe UI", 22, "bold"))
-            y += 78
+                self.create_text(x0 + 20, yy + 43, text=txt, anchor="w", fill="#ffffff",
+                                 font=("Segoe UI", 20 if cw >= 170 else 17, "bold"))
+                self.create_text(x0 + 20, yy + 64, text=unit, anchor="w", fill=DIM, font=("Segoe UI", 8))
+            y += rows * ch + (rows - 1) * gap
             sections.append((1, ys, y))
             y += 12
         # ---------------- плитки разделов
