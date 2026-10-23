@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""АФК-режим вкладки «PM» (только в основной программе Majestic Tools, в Majestic PM его нет).
+"""Автоматическая проверка вкладки «PM» (раньше «АФК-режим»; в обеих программах).
 
 Пока режим включён, раз в N минут бот сам достаёт планшет (клавиша, по умолчанию стрелка вниз),
 открывает EMS → «Коллеги» (выбранный отдел, прокрутка до конца списка) и «Вызовы» → «История»
@@ -48,7 +48,7 @@ TABLET_KEYS = ["Down", "Up", "Left", "Right", "F2", "F3", "F4", "F5", "F6", "F7"
 KEY_NAMES = {"Down": "Стрелка вниз", "Up": "Стрелка вверх", "Left": "Стрелка влево", "Right": "Стрелка вправо"}
 
 AFK_DEFAULT = {"interval": 10, "tablet_key": "Down", "dept": "PM", "colleagues": True, "calls": True,
-               "only_online": True, "waiting": True,
+               "only_online": True, "waiting": True, "balance": True,
                "group": False, "idle_guard": False, "idle_sec": 60, "sound": True, "popup": True, "tg": False}
 
 EVENTS = {"no_calls": "Не берёт вызовы", "away": "«Нет на месте» дольше", "inout": "Зашёл / вышел из игры",
@@ -305,6 +305,8 @@ class Tablet:
         self.cfg, self.inp, self.grab, self.log, self.save = cfg, inp, grab, log, save
         self.is_game, self.hist_min, self.stop, self.sleep = is_game, hist_min, stop, sleep
         self.k = (1.0, 1.0)
+        self.bal_fn = None               # shots -> [(uid, ник)] кого смотреть в «Управлении балансом» (в конце прохода)
+        self.bal_min, self.bal_shift, self.bal_res = 30, 0, None
         self.per = {}                    # строк за один щелчок колёсика у каждого раздела (уточняется на ходу)
         self.waiting = None
 
@@ -317,7 +319,7 @@ class Tablet:
 
     def shot(self):
         if self.stop():
-            raise Abort("АФК-режим выключен")
+            raise Abort("автоматическая проверка выключена")
         if not self.is_game():
             raise Abort("окно игры не на переднем плане")
         img = self.grab()
@@ -410,7 +412,7 @@ class Tablet:
                 return ws
             if s == "home":
                 self.click(*self.ems_icon(ws), 1.2)
-            elif s in ("colleagues", "calls", "history", "other"):
+            elif s in ("colleagues", "calls", "history", "balance", "other"):
                 self.click(*BACK, 1.0)
             s, ws = self.wait_screen(("menu",), 2.5)
         if s != "menu":
@@ -680,7 +682,7 @@ class Tablet:
         a = (row.get("name") or "").translate(LOOKALIKE).lower()
         return SequenceMatcher(None, a, (name or "").translate(LOOKALIKE).lower()).ratio() >= 0.6
 
-    def balance(self, people, minutes=30, shift=0):
+    def balance(self, people, minutes=30, shift=0, manage=True):
         """people: [(uid, ник)] -> {uid: {"name", "last": "ДД.ММ.ГГГГ ЧЧ:ММ" | None, "ago": мин | None,
         "n": действий за minutes, "types": {тип: сколько}, "shot": путь}}. Время таблицы - часы сервера:
         shift - на сколько они впереди часов ПК (из АФК-проверок, tz_shift)."""
@@ -688,7 +690,7 @@ class Tablet:
         import pm_ftext
         res = {}
         try:
-            s, ws = self.open()
+            s, ws = self.open() if manage else self.screen()
             if s != "balance":
                 ws = self.to_menu(s, ws)
                 s, ws = self.section(ws, "Управление", ("balance",))
@@ -705,15 +707,17 @@ class Tablet:
                 img, rows = self.settle_balance(uid, name)
                 now = time.time()
                 mine = [r for r in rows if self._same_person(r, uid, name)]
-                types, n = {}, 0
+                types, n, last_type = {}, 0, ""
                 for r in mine:
                     ago = (now - (r["date"].timestamp() - shift)) / 60
                     if ago <= minutes:
                         n += 1
                         t = r["type"].split("#")[0].strip() or "?"
                         types[t] = types.get(t, 0) + 1
+                        last_type = last_type or t                 # строки - новые сверху
                 last = mine[0]["date"] if mine else None
                 res[uid] = {"name": name, "last": last.strftime("%d.%m.%Y %H:%M") if last else None,
+                            "last_type": last_type, "min": minutes,
                             "ago": round((now - (last.timestamp() - shift)) / 60) if last else None,
                             "n": n, "full": n >= len(mine) and len(mine) >= 14, "types": types,
                             "shot": self.save(img)}
@@ -723,7 +727,8 @@ class Tablet:
             self.inp.key("Ctrl", False)
             self.inp.tap("Backspace", 40)
         finally:
-            self.close()
+            if manage:
+                self.close()
         return res
 
     def settle_balance(self, uid, name, timeout=7.0):
@@ -806,6 +811,19 @@ class Tablet:
                 self.log(f"История вызовов: {len(got)} скр.")
                 shots += got
                 s, ws = self.screen()
+            if self.bal_fn is not None and shots:
+                people = self.bal_fn(shots)
+                if people:
+                    self.log(f"Баланс: {len(people)} чел. без вызовов")
+                    try:                                       # сбой на балансе - скрины «Коллег» и «Вызовов» остаются
+                        ws = self.to_menu(s, ws)
+                        s, ws = self.section(ws, "Управление", ("balance",))
+                        self.bal_res = self.balance(people, self.bal_min, self.bal_shift, manage=False)
+                    except Abort as ex:
+                        if self.stop():
+                            raise
+                        self.log(f"Баланс не проверен: {ex}")
+                    s, ws = self.screen()
             if s not in ("none",):
                 self.to_menu(s, ws)                                 # оставляем планшет в меню EMS
         finally:
@@ -853,9 +871,10 @@ class Runner:
     get_cfg() -> настройки (afk_cfg), window() -> окно «катает» в минутах,
     post(сообщение) - в очередь вкладки: ("afk_status", текст) и ("afk", скрины, ошибка, время)."""
 
-    def __init__(self, get_cfg, window, post):
+    def __init__(self, get_cfg, window, post, pick=None):
+        """pick(snap) -> [(uid, ник)] - кого после прохода смотреть в «Управлении балансом» (в сети, без вызовов)."""
         import threading
-        self.get_cfg, self.window, self.post = get_cfg, window, post
+        self.get_cfg, self.window, self.post, self.pick = get_cfg, window, post, pick
         self.on, self.force, self.alive = False, False, True
         self.next_t = None
         self.running = False
@@ -869,8 +888,8 @@ class Runner:
     def set_on(self, on):
         self.on = bool(on)
         self.next_t = time.time() + 5 if on else None           # первая проверка - через 5 с (успеть в игру)
-        self.post(("afk_status", "АФК-режим: первая проверка через 5 с - переключись в игру" if on
-                   else "АФК-режим выключен"))
+        self.post(("afk_status", "Автопроверка: первая через 5 с - переключись в игру" if on
+                   else "Автоматическая проверка выключена"))
 
     def check_now(self):
         self.force = True
@@ -912,7 +931,7 @@ class Runner:
             cfg = self.get_cfg()
             if not self.force and self.next_t and time.time() < self.next_t:
                 left = int(self.next_t - time.time())
-                st = f"АФК-режим: следующая проверка через {left // 60}:{left % 60:02d}"
+                st = f"Автопроверка: следующая через {left // 60}:{left % 60:02d}"
                 if st != last_status and left % 5 == 0:
                     self.post(("afk_status", st))
                     last_status = st
@@ -920,7 +939,7 @@ class Runner:
             why = self._wait_reason(cfg)
             if why:
                 if why != last_status:
-                    self.post(("afk_status", "АФК-режим: " + why))
+                    self.post(("afk_status", "Автопроверка: " + why))
                     last_status = why
                 time.sleep(2)
                 continue
@@ -1000,16 +1019,24 @@ class Runner:
             return p
 
         def log(m):
-            self.post(("afk_status", "АФК: " + m))
+            self.post(("afk_status", "Автопроверка: " + m))
         BUSY["on"] = True
         self.running = True
-        err, shots, t0, waiting = "", [], time.time(), None
+        err, shots, t0, waiting, tab = "", [], time.time(), None, None
         try:
             time.sleep(0.6)                                        # анти-АФК успевает встать на паузу
             tab = Tablet(cfg, AF.Input2(), grab, log, save,
                          lambda: any(t in AF.foreground_title().lower() for t in GAME_TITLES),
                          hist_min=max(self.window(), float(cfg["interval"])) + 3,
                          stop=lambda: not self.alive or not (self.on or forced))
+            if cfg.get("balance", True) and self.pick:
+                win = self.window()
+
+                def bal_fn(shots_):
+                    res_ = [r for _, r in shots_ if r and r.get("kind")]
+                    return self.pick(PT.merge(res_, win)) if res_ else []
+                tab.bal_fn, tab.bal_min = bal_fn, (win if win > 0 else 10 ** 6)
+                tab.bal_shift = load_state().get("tz_shift", 0)
             shots = tab.run()
             waiting = tab.waiting
         except Abort as ex:
@@ -1023,7 +1050,7 @@ class Runner:
                 sct.close()
             except Exception:
                 pass
-        self.post(("afk", shots, err, time.time() - t0, waiting))
+        self.post(("afk", shots, err, time.time() - t0, waiting, tab.bal_res if tab is not None else None))
         try:                                                       # старые проверки - удалить
             import shutil
             for old in sorted(os.listdir(shots_root()))[:-KEEP_ROUNDS]:

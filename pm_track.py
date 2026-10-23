@@ -417,13 +417,23 @@ def sorted_emp(snap):
 
 
 def table_text(snap):
-    lines = ["№\tНик\tСтатик\tРанг\tОтдел\tСтатус\tВызовы\tГруппа\tБрифинг\tКомментарий"]
+    lines = ["№\tНик\tСтатик\tРанг\tОтдел\tСтатус\tРабота\tГруппа\tБрифинг\tКомментарий"]
     for i, (uid, e) in enumerate(sorted_emp(snap), 1):
         com = (e.get("comment") or "").replace("\t", " ").replace("\n", " ")
         lines.append(f"{i}\t{e['name']}\t{uid}\t{e.get('rank') or ''}\t{e.get('dept') or ''}\t{status_text(e)}\t"
-                     f"{'катает' if e.get('on_calls') else ''}\t{group_text(snap, e)}\t"
+                     f"{work_text(e)}\t{group_text(snap, e)}\t"
                      f"{BRIEF_NAME.get(e.get('brief') or '', '')}\t{com}")
     return "\n".join(lines)
+
+
+def work_text(e):
+    """«катает» по вызовам или последнее действие по «Управлению балансом» (e["bal"] ставит вкладка PM)."""
+    if e.get("on_calls"):
+        return "катает"
+    b = e.get("bal") or {}
+    if b.get("n"):
+        return f"{b.get('last_type') or 'работал'} ({b['n']})"
+    return ""
 
 
 def group_text(snap, e):

@@ -42,7 +42,7 @@ def save_cfg(c):
 
 
 def build_pm_tab(parent, afk=False):
-    """afk=True - с АФК-режимом (бот сам достаёт планшет и снимает скрины; только в основной программе)."""
+    """afk=True - с автоматической проверкой (бот сам достаёт планшет, снимает скрины, смотрит баланс)."""
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
     import theme as T
@@ -109,18 +109,16 @@ def build_pm_tab(parent, afk=False):
         save_cfg(cfg)
         bar3 = ttk.Frame(parent)
         bar3.pack(fill="x", padx=8, pady=(0, 4))
-        afk_ui["btn"] = ttk.Button(bar3, text="АФК-режим: выкл", command=lambda: afk_toggle())
+        afk_ui["btn"] = ttk.Button(bar3, text="Автопроверка: выкл", command=lambda: afk_toggle())
         afk_ui["btn"].pack(side="left")
         ttk.Button(bar3, text="Проверить сейчас", command=lambda: afk_ui["run"].check_now()).pack(side="left", padx=4)
-        ttk.Button(bar3, text="Настройки АФК…", command=lambda: afk_settings()).pack(side="left", padx=4)
+        ttk.Button(bar3, text="Настройки…", command=lambda: afk_settings()).pack(side="left", padx=4)
         ttk.Button(bar3, text="Правила наблюдения…", command=lambda: rules_dialog()).pack(side="left", padx=4)
         ttk.Button(bar3, text="Проверить по балансу", style="Accent.TButton",
                    command=lambda: balance_check()).pack(side="left", padx=(16, 4))
-        ttk.Label(bar3, text="кто не катает: работал ли за").pack(side="left")
-        afk_ui["bal_min"] = tk.StringVar(value=str(cfg.get("bal_min", 30)))
-        ttk.Spinbox(bar3, from_=5, to=240, width=4, textvariable=afk_ui["bal_min"]).pack(side="left", padx=3)
-        ttk.Label(bar3, text="мин").pack(side="left")
-        afk_ui["var"] = tk.StringVar(value="АФК-режим выключен: бот сам достаёт планшет и снимает скрины по таймеру")
+        ttk.Label(bar3, text="(окно - внизу: «Работает - вызов или баланс за…»)", style="Muted.TLabel").pack(side="left")
+        afk_ui["var"] = tk.StringVar(value="Автоматическая проверка выключена: бот сам достаёт планшет, снимает скрины "
+                                           "и смотрит баланс по таймеру")
         ttk.Label(parent, textvariable=afk_ui["var"], style="Muted.TLabel").pack(anchor="w", padx=10)
         afk_ui["stats"] = tk.StringVar(value=pm_afk.stats_text(pm_afk.load_state().get("stats")))
         ttk.Label(parent, textvariable=afk_ui["stats"], style="Muted.TLabel").pack(anchor="w", padx=10)
@@ -152,12 +150,11 @@ def build_pm_tab(parent, afk=False):
         pass
     nb.bind("<<NotebookTabChanged>>", lambda e: (cfg.update(tab=nb.index("current")), save_cfg(cfg)))
 
-    cols = ("num", "name", "cn", "uid", "cu", "rank", "dept", "status", "calls", "bal", "group", "brief", "comment")
+    cols = ("num", "name", "cn", "uid", "cu", "rank", "dept", "status", "calls", "group", "brief", "comment")
     et = ttk.Treeview(tabs["emp"], columns=cols, show="headings", selectmode="browse")
     for c, h, w, a in (("num", "№", 36, "e"), ("name", "Ник", 160, "w"), ("cn", "", 24, "center"),
                        ("uid", "Статик", 64, "e"), ("cu", "", 24, "center"),
-                       ("rank", "Ранг", 44, "e"), ("dept", "Отдел", 56, "center"), ("status", "Статус", 130, "w"), ("calls", "Вызовы", 80, "w"),
-                       ("bal", "Баланс", 110, "w"),
+                       ("rank", "Ранг", 44, "e"), ("dept", "Отдел", 56, "center"), ("status", "Статус", 130, "w"), ("calls", "Работа", 170, "w"),
                        ("group", "Группа", 60, "center"), ("brief", "Брифинг", 64, "center"),
                        ("comment", "Комментарий", 120, "w")):
         et.heading(c, text=h)
@@ -170,6 +167,7 @@ def build_pm_tab(parent, afk=False):
     et.tag_configure("doubt", foreground="#ffb347")
     et.tag_configure("off", foreground=T.MUTED)
     et.tag_configure("calls", foreground=T.OK)
+    et.tag_configure("bal", foreground="#4fd1c5")
     et.tag_configure("left", foreground="#e06c6c")
 
     ct = ttk.Treeview(tabs["calls"], columns=("emp", "uid", "cit", "reason", "status", "date"), show="headings")
@@ -194,9 +192,9 @@ def build_pm_tab(parent, afk=False):
     bot = ttk.Frame(parent)
     bot.pack(side="bottom", fill="x", padx=8, pady=(2, 8), before=body)
     win_var = tk.StringVar(value=str(cfg.get("window", 15)))
-    ttk.Label(bot, text="Катает - вызов за последние").pack(side="left")
+    ttk.Label(bot, text="Работает - вызов или баланс за").pack(side="left")
     ttk.Entry(bot, textvariable=win_var, width=4).pack(side="left", padx=4)
-    ttk.Label(bot, text="мин. (0 - все на скринах)").pack(side="left")
+    ttk.Label(bot, text="мин. (0 - всё)").pack(side="left")
     for text, cmd in (("Копировать таблицу", lambda: copy(PT.table_text(view(st["snap"])) if st["snap"] else "")),
                       ("Копировать изменения", lambda: copy(diff_txt.get("1.0", "end").strip())),
                       ("Копировать /f", lambda: ftab.copy_all())):
@@ -464,14 +462,20 @@ def build_pm_tab(parent, afk=False):
     def view(s):
         return PT.filtered(s, cfg["filter"], cfg["white"])
 
-    def bal_text(b):
+    def work_text(e, b):
+        """Колонка «Работа»: катает вызовы (по «Истории») или что делал последним по «Управлению балансом»
+        за то же окно, что и вызовы."""
+        if e.get("on_calls"):
+            return f"катает ({e['calls']})"
         if not b:
             return ""
-        if not b.get("last"):
-            return "нет записей"
+        if b.get("n"):
+            t = (b.get("last_type") or "работал").replace("Вылечил игрока", "лечил").replace("Продажа таблетки", "продал таблетку")
+            return f"{t[:1].lower() + t[1:]} ({b['n']}{'+' if b.get('full') else ''})"
         ago = b.get("ago")
-        when = (f"{ago} мин назад" if ago < 120 else f"{ago // 60} ч назад") if ago is not None and ago >= 0 else b["last"][-5:]
-        return (f"✓ {b['n']}{'+' if b.get('full') else ''} · " if b.get("n") else "✗ ") + when
+        if ago is None:
+            return "баланс: пусто"
+        return "баланс: " + (f"{ago} мин назад" if ago < 120 else f"{ago // 60} ч назад")
 
     def fill(full):
         for uid, e in full["employees"].items():              # проверка по балансу - и в таблицу, и в тексты /f
@@ -489,10 +493,12 @@ def build_pm_tab(parent, afk=False):
                 tags.append("off")
             elif e.get("on_calls"):
                 tags.append("calls")
+            elif (st["bal"].get(uid) or {}).get("n"):
+                tags.append("bal")
             et.insert("", "end", iid=uid, tags=tags, values=(
                 i + 1, ("★ " if PT.in_white(uid, e, cfg["white"]) else "") + e["name"] + ("  ⚠" if e.get("doubt") else ""),
                 "⧉", uid, "⧉", e.get("rank") or "", e.get("dept") or "",
-                PT.status_text(e), f"катает ({e['calls']})" if e.get("on_calls") else "", bal_text(st["bal"].get(uid)),
+                PT.status_text(e), work_text(e, st["bal"].get(uid)),
                 ("✓" if e.get("in_group") else "—") if snap.get("has_group") else "",
                 {"yes": "✓ есть", "no": "✗ нет"}.get(e.get("brief") or "", "·"), e.get("comment") or ""))
         if sel and et.exists(sel[0]):
@@ -936,7 +942,7 @@ def build_pm_tab(parent, afk=False):
                     if afk_ui:
                         afk_ui["var"].set(m[1])
                 elif m[0] == "afk":
-                    afk_done(m[1], m[2], m[3], m[4] if len(m) > 4 else None)
+                    afk_done(m[1], m[2], m[3], m[4] if len(m) > 4 else None, m[5] if len(m) > 5 else None)
                 elif m[0] == "balance":
                     balance_done(*m[1:])
                 elif m[0] == "folder":
@@ -961,39 +967,39 @@ def build_pm_tab(parent, afk=False):
     def afk_toggle():
         run = afk_ui["run"]
         run.set_on(not run.on)
-        afk_ui["btn"].configure(text="АФК-режим: ВКЛ" if run.on else "АФК-режим: выкл",
+        afk_ui["btn"].configure(text="Автопроверка: ВКЛ" if run.on else "Автопроверка: выкл",
                                 style="Accent.TButton" if run.on else "TButton")
 
     def bal_minutes():
-        try:
-            return max(5, min(240, int(afk_ui["bal_min"].get())))
-        except (ValueError, tk.TclError, KeyError):
-            return 30
+        w = window()                                   # то же окно, что «катает» (0 - всё, что на экране)
+        return w if w > 0 else 10 ** 6
+
+    def pick_people(snap):
+        """Кого смотреть в «Управлении балансом»: в сети (активен / нет на месте) и не катает вызовы, с учётом фильтра."""
+        return [(uid, e["name"]) for uid, e in PT.sorted_emp(view(snap))
+                if e.get("status") in ("active", "away") and not e.get("on_calls")]
 
     def balance_check():
         """Кто в сети и не катает вызовы -> бот смотрит каждого в «Управлении балансом» (лечил, продавал таблетки)."""
         if not st["snap"]:
             msg.set("Сначала нужна проверка состава («Коллеги» и «Вызовы»)")
             return
-        snap = view(st["snap"])
-        people = [(uid, e["name"]) for uid, e in PT.sorted_emp(snap)
-                  if e.get("status") in ("active", "away") and not e.get("on_calls")]
+        people = pick_people(st["snap"])
         if not people:
             msg.set("Проверять некого: все в сети катают вызовы")
             return
-        cfg["bal_min"] = bal_minutes()
-        save_cfg(cfg)
         if afk_ui.get("run") is None:
-            msg.set("АФК-режим не запущен")
+            msg.set("Автоматическая проверка не запущена")
             return
-        afk_ui["run"].balance_now(people, cfg["bal_min"])
+        afk_ui["run"].balance_now(people, bal_minutes())
         msg.set(f"Проверка по балансу: {len(people)} чел. (~{len(people) * 4} с) - переключись в игру")
 
     def balance_done(res, err, dur, folder):
         st["bal"].update(res)
         work = [b["name"] for b in res.values() if b.get("n")]
         idle = [b["name"] for b in res.values() if not b.get("n")]
-        txt = (f"Баланс за {bal_minutes()} мин: работали {len(work)}, без действий {len(idle)} "
+        win = window()
+        txt = (f"Баланс{f' за {win} мин' if win else ''}: работали {len(work)}, без действий {len(idle)} "
                f"({dur:.0f} с, скрины - правый щелчок по строке)")
         if err:
             txt += f" · прервано: {err}"
@@ -1003,12 +1009,15 @@ def build_pm_tab(parent, afk=False):
         if st["snap"]:
             fill(st["snap"])
 
-    def afk_done(shots, err, dur, waiting=None):
-        """Пришла проверка АФК-режима: скрины -> таблица (как новая проверка), правила -> уведомления."""
+    def afk_done(shots, err, dur, waiting=None, bal=None):
+        """Пришла автоматическая проверка: скрины -> таблица (как новая проверка), баланс -> колонка «Работа»,
+        правила -> уведомления."""
         good = [(p, r) for p, r in shots if r and r.get("kind")]
         if not good:
-            afk_ui["var"].set(f"АФК: проверка не удалась - {err or 'нет скринов'}")
+            afk_ui["var"].set(f"Автопроверка не удалась - {err or 'нет скринов'}")
             return
+        if bal is not None:
+            st["bal"] = dict(bal)                       # новая проверка - старый баланс не тянем
         prev_snap = st["snap"]
         now = time.time()
         st["shots"][:] = [{"path": p, "name": os.path.basename(os.path.dirname(p)) + "/" + os.path.basename(p),
@@ -1027,7 +1036,8 @@ def build_pm_tab(parent, afk=False):
             pm_afk.save_state(state)
             afk_ui["stats"].set("Вызовы: " + (pm_afk.stats_text(state.get("stats")) or "пока нет данных"))
         stamp = time.strftime("%H:%M")
-        afk_ui["var"].set(f"АФК: проверка {stamp} за {dur:.0f} с" + (f" (не всё: {err})" if err else "") +
+        nb_ = (f" · баланс: работали {sum(1 for b in bal.values() if b.get('n'))} из {len(bal)}" if bal else "")
+        afk_ui["var"].set(f"Автопроверка {stamp} за {dur:.0f} с" + nb_ + (f" (не всё: {err})" if err else "") +
                           (f" · событий: {len(hits)}" if hits else " · событий нет"))
         if hits:
             afk_notify(hits, stamp)
@@ -1087,7 +1097,7 @@ def build_pm_tab(parent, afk=False):
     def afk_settings():
         a = cfg["afk"]
         dlg = tk.Toplevel(parent)
-        dlg.title("АФК-режим: настройки")
+        dlg.title("Автоматическая проверка: настройки")
         dlg.configure(bg=T.BG)
         dlg.transient(parent.winfo_toplevel())
         pad = {"padx": 12, "pady": 4}
@@ -1095,8 +1105,8 @@ def build_pm_tab(parent, afk=False):
         names = [pm_afk.KEY_NAMES.get(k, k) for k in pm_afk.TABLET_KEYS]
         v_key = tk.StringVar(value=pm_afk.KEY_NAMES.get(a["tablet_key"], a["tablet_key"]))
         v_dept = tk.StringVar(value=a["dept"])
-        v_col, v_calls, v_grp, v_onl, v_wait = (tk.BooleanVar(value=a[k]) for k in
-                                                ("colleagues", "calls", "group", "only_online", "waiting"))
+        v_col, v_calls, v_grp, v_onl, v_wait, v_bal = (tk.BooleanVar(value=a[k]) for k in
+                                                       ("colleagues", "calls", "group", "only_online", "waiting", "balance"))
         v_idle, v_idle_s = tk.BooleanVar(value=a["idle_guard"]), tk.StringVar(value=str(a["idle_sec"]))
         r = 0
         ttk.Label(dlg, text="Проверять каждые").grid(row=r, column=0, sticky="w", **pad)
@@ -1123,6 +1133,8 @@ def build_pm_tab(parent, afk=False):
                         variable=v_onl).pack(anchor="w")
         ttk.Checkbutton(f2, text="«Вызовы» → «История» (за время между проверками + 3 мин)", variable=v_calls).pack(anchor="w")
         ttk.Checkbutton(f2, text="    «Доступные» - сколько вызовов ждут", variable=v_wait).pack(anchor="w")
+        ttk.Checkbutton(f2, text="«Управление балансом» - кто без вызовов: что делал (лечил, таблетки...)",
+                        variable=v_bal).pack(anchor="w")
         cb = ttk.Checkbutton(f2, text="Группа в телефоне", variable=v_grp)
         cb.pack(anchor="w")
         cb.state(["disabled"])
@@ -1135,6 +1147,7 @@ def build_pm_tab(parent, afk=False):
         ttk.Label(f3, text="с").pack(side="left")
         r += 1
         ttk.Label(dlg, text="Проверка идёт, только когда игра на переднем плане; во время неё анти-АФК стоит на паузе.\n"
+                            "Баланс смотрится за то же время, что «катает» (поле внизу вкладки).\n"
                             "Планшет бот закрывает сам; если что-то пошло не так - закрывает и пробует в следующий раз.",
                   style="Muted.TLabel", justify="left").grid(row=r, column=0, columnspan=2, sticky="w", **pad)
 
@@ -1147,7 +1160,7 @@ def build_pm_tab(parent, afk=False):
             a["tablet_key"] = next((k for k in pm_afk.TABLET_KEYS if pm_afk.KEY_NAMES.get(k, k) == v_key.get()), "Down")
             a["dept"] = v_dept.get().strip()
             a["colleagues"], a["calls"], a["group"] = bool(v_col.get()), bool(v_calls.get()), False
-            a["only_online"], a["waiting"] = bool(v_onl.get()), bool(v_wait.get())
+            a["only_online"], a["waiting"], a["balance"] = bool(v_onl.get()), bool(v_wait.get()), bool(v_bal.get())
             a["idle_guard"] = bool(v_idle.get())
             save_cfg(cfg)
             dlg.destroy()
@@ -1164,7 +1177,7 @@ def build_pm_tab(parent, afk=False):
         dlg.title("Правила наблюдения")
         dlg.configure(bg=T.BG)
         dlg.transient(parent.winfo_toplevel())
-        ttk.Label(dlg, text="Правило = кого смотрим + что ловим. После каждой АФК-проверки сработавшие правила "
+        ttk.Label(dlg, text="Правило = кого смотрим + что ловим. После каждой автоматической проверки сработавшие правила "
                             "присылают уведомление (одно на случай, пока он длится).", style="Muted.TLabel",
                   wraplength=760, justify="left").pack(anchor="w", padx=12, pady=(10, 4))
         tv = ttk.Treeview(dlg, columns=("on", "name", "ev", "who", "how"), show="headings", height=9, selectmode="browse")
@@ -1308,7 +1321,7 @@ def build_pm_tab(parent, afk=False):
             pass
 
     if afk:
-        afk_ui["run"] = pm_afk.Runner(lambda: cfg["afk"], window, q.put)
+        afk_ui["run"] = pm_afk.Runner(lambda: cfg["afk"], window, q.put, pick=pick_people)
 
     def provider():
         s = dict(STATE)
