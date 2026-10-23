@@ -35,6 +35,7 @@ import json
 import time
 import math
 import ctypes
+import threading
 import numpy as np
 import cv2
 
@@ -61,7 +62,8 @@ LAT_VIS = 0.02            # с: задержка от нажатия до сни
 PULSE_LOSS = 0.006        # с: столько игра «съедает» от каждого нажатия A/D (запись 20261020_191855: короткие нажатия давали ~75% поворота)
 CORNER_K = 0.15           # 1/px: линия впереди не прослеживается посреди сетки = острый угол, тормозим до него
 MIN_TURN = 1.0            # град: меньше - не крутим
-K_TURN = 1.3              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха)
+K_TURN = 1.7              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха);
+                          # 1.3 -> 1.7 (v1.49.0): виртуальная швейка -1,4..-1,6 с на комплект, мимо узора ~1,5 с (красная ~9%)
 
 # скорость машинки (0 = зелёная иконка, 1 = красная)
 SPEED_MAX = 1.00          # максимум на прямой
@@ -685,6 +687,86 @@ def prompt_visible(img, g, off):
 
 
 # ================================================================ бот
+class Grabber:
+    """Снимки в своём потоке: пока бот разбирает кадр N, здесь уже снимается N+1 (снимок ~13 мс и разбор ~14 мс
+    раньше шли друг за другом). Подсказки (игра открыта / «Нажмите E») - здесь же, раз в UI_CHECK."""
+
+    def __init__(self, mon, g):
+        self.mon, self.g = mon, g
+        self.cv = threading.Condition()
+        self.frame = None            # (время снимка, картинка, смещение)
+        self.ui = (False, False)
+        self.want = True
+        self.stop = False
+        self.err = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        import mss
+        try:
+            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+        g = self.g
+        sct = mss.mss()
+        hb = (min(b[0] for b in g.hints), min(b[1] for b in g.hints),
+              max(b[2] for b in g.hints), max(b[3] for b in g.hints))
+
+        def grab(b):
+            x0, y0, x1, y1 = b
+            shot = sct.grab({"left": self.mon["left"] + x0, "top": self.mon["top"] + y0,
+                             "width": x1 - x0, "height": y1 - y0})
+            return np.asarray(shot)[:, :, :3], (x0, y0)
+        last_ui = 0.0
+        try:
+            while not self.stop:
+                now = time.time()
+                if now - last_ui > UI_CHECK:          # подсказки - и когда кадры игры не нужны (ждём E)
+                    img, off = grab(hb)
+                    game = game_visible(img, g, off)
+                    img, off = grab(g.ebox)
+                    self.ui = (game, prompt_visible(img, g, off))
+                    last_ui = now
+                with self.cv:
+                    if not self.want:
+                        self.cv.wait(0.03)
+                        continue
+                t = time.time()
+                img, off = grab(g.main)
+                with self.cv:
+                    self.frame = (t, img, off)
+                    self.want = False
+                    self.cv.notify_all()
+        except Exception as ex:
+            self.err = ex
+            with self.cv:
+                self.cv.notify_all()
+
+    def get(self, timeout=0.5):
+        """Самый свежий кадр, которого ещё не брали; сразу заказывает следующий."""
+        with self.cv:
+            end = time.time() + timeout
+            while self.err is None and time.time() < end:
+                if self.frame is not None and time.time() - self.frame[0] < 0.08:
+                    break
+                if self.frame is not None:            # залежался (бот ждал E) - нужен свежий
+                    self.frame = None
+                    self.want = True
+                    self.cv.notify_all()
+                self.cv.wait(0.05)
+            if self.err is not None:
+                raise self.err
+            fr, self.frame = self.frame, None
+            self.want = True
+            self.cv.notify_all()
+            return fr
+
+    def close(self):
+        with self.cv:
+            self.stop = True
+            self.cv.notify_all()
+
+
 class Bot:
     def __init__(self, log=print):
         import mss
@@ -711,6 +793,10 @@ class Bot:
         return game, prompt_visible(img, g, off)
 
     def read(self):
+        if getattr(self, "grabber", None) is not None:
+            fr = self.grabber.get()
+            if fr is not None:
+                return analyze(fr[1], self.g, fr[2])
         img, off = self.grab(self.g.main)
         return analyze(img, self.g, off)
 
@@ -730,6 +816,7 @@ class Bot:
             ctypes.windll.winmm.timeBeginPeriod(1)    # точные короткие нажатия A/D (таймер Windows иначе ~15 мс)
         except Exception:
             pass
+        self.grabber = Grabber(self.mon, self.g)
         try:
             while not ctrl.quit:
                 if not switches.is_on("bot"):
@@ -758,9 +845,7 @@ class Bot:
                     continue
 
                 now = time.time()
-                if now - last_ui > UI_CHECK:
-                    game, prompt = self.ui_state()
-                    last_ui = now
+                game, prompt = self.grabber.ui            # снимает поток Grabber раз в UI_CHECK
 
                 BUSY["on"] = bool(game)
                 if game:
@@ -772,8 +857,6 @@ class Bot:
                         self.ctl.reset()
                     st = self.read()
                     last_progress = st["progress"]
-                    if last_progress > 0.97:
-                        last_ui = 0.0                     # комплект дошит - сразу проверить, не закрылась ли игра
                     mode = self.ctl.apply(st)[0]
                     if mode != last_mode and mode in ("recover", "search"):
                         log("  вылетел с линии, возвращаюсь" if mode == "recover"
@@ -805,6 +888,7 @@ class Bot:
                 time.sleep(0.05)
         finally:
             BUSY["on"] = False
+            self.grabber.close()
             self.keys.gen = getattr(self.keys, "gen", 0) + 1     # отменить отложенные отпускания
             self.keys.release_all()
             try:
