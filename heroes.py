@@ -1029,4 +1029,4 @@ class BuildHero(Hero):
 
 HEROES = {"fish": FishHero, "bot": SewHero, "afk": AfkHero, "ram": RamHero, "cook": CookHero,
           "admin": AdminHero, "market": MarketHero, "pm": PmHero, "rec": RecHero, "sand": SandHero, "wood": WoodHero,
-          "mine": MineHero, "gym": GymHero, "farm": FarmHero, "build": BuildHero}
+          "mine": MineHero, "gym": GymHero, "farm": FarmHero, "build": BuildHero, "sewbeta": SewHero}
