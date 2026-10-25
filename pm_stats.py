@@ -8,6 +8,7 @@ import os
 import json
 import time
 from collections import Counter
+from functools import lru_cache
 from datetime import datetime, timedelta
 
 import pm_track as PT
@@ -73,9 +74,15 @@ def _prune(h, now):
             p[k] = {kk: v for kk, v in p[k].items() if (_ts(v[0]) or now) >= t0 - 2 * 86400}
 
 
-def _ts(date_s, shift=0.0):
+@lru_cache(maxsize=200000)
+def _ts0(date_s):
     d = PT._dt(date_s)
-    return d.timestamp() - shift if d else None
+    return d.timestamp() if d else None
+
+
+def _ts(date_s, shift=0.0):
+    t = _ts0(date_s)
+    return t - shift if t is not None else None
 
 
 def record_snap(snap, check_t=None):
@@ -487,4 +494,224 @@ def open_window(parent, uid, emp=None, marks=None, shot=None):
     d.after(60, refresh)
     tiles.bind("<Configure>", lambda e: S["s"] and draw_tiles(S["s"]))
     chart.bind("<Configure>", lambda e: S["s"] and draw_chart(S["s"]))
+    return d
+
+
+# ====================================================================== отчёт на всех
+def report(period, now=None, current=None):
+    """Строка на каждого, кто за период был в сети, принимал вызовы или что-то делал по балансу.
+    current - сотрудники текущей таблицы {uid: e}: ник/ранг/отдел оттуда (свежее истории)."""
+    now = now or time.time()
+    h = load()
+    shift = tz_shift()
+    t0, t1 = period_bounds(period, now)
+    current = current or {}
+    rows = []
+    for uid, p in h["people"].items():
+        by_st, calls_s, n_on = _online(h, p, t0, t1)
+        nc = len(_calls_of(p, t0, t1, shift))
+        nb = len(_bal_of(p, t0, t1, shift))
+        if not (n_on or nc or nb):
+            continue
+        cur = current.get(uid) or {}
+        rk = p["rk"][-1] if p["rk"] else [0, "", ""]
+        on = sum(by_st.values())
+        last = max([x[0] for x in p["pts"]] or [0])
+        rows.append({"uid": uid, "name": cur.get("name") or p.get("name", ""), "rank": cur.get("rank") or rk[1],
+                     "dept": cur.get("dept") or rk[2], "online": on, "active": by_st.get("active", 0),
+                     "away": by_st.get("away", 0), "calls_time": calls_s, "calls": nc,
+                     "rate": nc / (on / 3600) if on >= 600 else None, "bal": nb, "checks_on": n_on, "last": last})
+    rows.sort(key=lambda r: (-r["calls"], -r["online"]))
+    for i, r in enumerate(rows):
+        r["place"] = 1 + sum(1 for q in rows if q["calls"] > r["calls"]) if r["calls"] else None
+    checks = sum(1 for t in h["checks"] if t0 <= t < t1)
+    return {"rows": rows, "checks": checks, "t0": t0, "t1": t1, "period": period}
+
+
+REP_COLS = (("place", "Место", 62, "e"), ("name", "Ник", 150, "w"), ("uid", "Статик", 64, "e"), ("rank", "Ранг", 44, "e"),
+            ("dept", "Отдел", 56, "center"), ("calls", "Вызовов", 80, "e"), ("rate", "В час", 62, "e"),
+            ("bal", "Баланс", 70, "e"), ("online", "В сети", 92, "e"), ("active", "Активен", 92, "e"),
+            ("away", "Нет на месте", 92, "e"), ("calls_time", "Катал", 92, "e"), ("checks_on", "Проверок", 84, "e"),
+            ("last", "Был в сети", 110, "w"))
+
+
+def _cell(r, k):
+    v = r.get(k)
+    if k in ("online", "active", "away", "calls_time"):
+        return hm(v) if v else "-"
+    if k == "rate":
+        return f"{v:.1f}" if v is not None else "-"
+    if k == "last":
+        return datetime.fromtimestamp(v).strftime("%d.%m %H:%M") if v else "-"
+    if k == "place":
+        return v or "-"
+    return "" if v is None else v
+
+
+def report_text(rep, rows):
+    a = datetime.fromtimestamp(rep["t0"]).strftime("%d.%m.%Y") if rep["t0"] else "начала"
+    b = datetime.fromtimestamp(rep["t1"]).strftime("%d.%m.%Y %H:%M")
+    out = [f"Отчёт PM: {rep['period'].lower()} ({a} - {b}), проверок: {rep['checks']}",
+           "\t".join(c[1] for c in REP_COLS)]
+    for r in rows:
+        out.append("\t".join(str(_cell(r, c[0])) for c in REP_COLS))
+    return "\n".join(out)
+
+
+def open_report(parent, current=None, marks=None, shots=None):
+    """Окно «Отчёт»: таблица на всех за период, сортировка щелчком по заголовку, двойной щелчок - статистика человека."""
+    import tkinter as tk
+    from tkinter import ttk, filedialog
+    import theme as T
+    current = current or {}
+    d = tk.Toplevel(parent)
+    d.title("Отчёт PM")
+    d.configure(bg=T.BG)
+    d.geometry("1240x720")
+    d.minsize(900, 480)
+    try:
+        T.dark_titlebar(d)
+    except Exception:
+        pass
+    top = ttk.Frame(d)
+    top.pack(fill="x", padx=14, pady=(12, 6))
+    tk.Label(top, text="Отчёт по сотрудникам", bg=T.BG, fg=T.TEXT, font=("Segoe UI", 15, "bold")).pack(side="left")
+    per_var = tk.StringVar(value="7 дней")
+    ttk.Label(top, text="Период:").pack(side="left", padx=(20, 4))
+    cb = ttk.Combobox(top, textvariable=per_var, values=PERIODS, state="readonly", width=11)
+    cb.pack(side="left")
+    dept_var = tk.StringVar(value="все")
+    ttk.Label(top, text="Отдел:").pack(side="left", padx=(14, 4))
+    dcb = ttk.Combobox(top, textvariable=dept_var, values=["все"], state="readonly", width=8)
+    dcb.pack(side="left")
+    q_var = tk.StringVar()
+    ttk.Label(top, text="Поиск:").pack(side="left", padx=(14, 4))
+    ttk.Entry(top, textvariable=q_var, width=16).pack(side="left")
+
+    tiles = tk.Canvas(d, bg=T.BG, height=70, highlightthickness=0)
+    tiles.pack(fill="x", padx=14, pady=4)
+    mid = ttk.Frame(d)
+    mid.pack(fill="both", expand=True, padx=14, pady=4)
+    tv = ttk.Treeview(mid, columns=[c[0] for c in REP_COLS], show="headings", selectmode="extended")
+    sb = ttk.Scrollbar(mid, orient="vertical", command=tv.yview)
+    tv.configure(yscrollcommand=sb.set)
+    tv.pack(side="left", fill="both", expand=True)
+    sb.pack(side="right", fill="y")
+    tv.tag_configure("odd", background=T.FIELD_ALT)
+    tv.tag_configure("zero", foreground=T.MUTED)
+    S = {"rep": None, "rows": [], "sort": ("calls", True)}
+
+    def sort_by(k):
+        cur, rev = S["sort"]
+        S["sort"] = (k, not rev if cur == k else k not in ("name", "dept", "uid"))
+        fill()
+    for c, hdr, w, a in REP_COLS:
+        tv.heading(c, text=hdr, command=lambda k=c: sort_by(k))
+        tv.column(c, width=w, anchor=a, stretch=c == "name")
+
+    bot = ttk.Frame(d)
+    bot.pack(fill="x", padx=14, pady=(4, 12))
+    hint = ttk.Label(bot, text="", style="Muted.TLabel")
+    hint.pack(side="left")
+    ttk.Button(bot, text="Закрыть", command=d.destroy).pack(side="right")
+    ttk.Button(bot, text="Сохранить CSV…", command=lambda: save_csv()).pack(side="right", padx=6)
+    ttk.Button(bot, text="Копировать таблицу", style="Accent.TButton", command=lambda: copy()).pack(side="right")
+
+    def key(r, k):
+        v = r.get(k)
+        if k in ("name", "dept", "uid"):
+            return str(v or "").lower()
+        if k == "rank":
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return -1
+        if k == "place":
+            return -(v or 10 ** 6)
+        return v if v is not None else -1
+
+    def visible():
+        q = q_var.get().strip().lower()
+        dep = dept_var.get()
+        out = [r for r in S["rows"] if (dep == "все" or r["dept"] == dep) and
+               (not q or q in (r["name"] or "").lower() or q in r["uid"])]
+        k, rev = S["sort"]
+        out.sort(key=lambda r: key(r, k), reverse=rev)
+        return out
+
+    def draw_tiles(rows):
+        tiles.delete("all")
+        w = max(tiles.winfo_width(), 800)
+        rep = S["rep"]
+        nc = sum(r["calls"] for r in rows)
+        on = sum(r["online"] for r in rows)
+        items = [("СОТРУДНИКОВ", str(len(rows)), T.TEXT), ("ВЫЗОВОВ ВСЕГО", str(nc), T.OK),
+                 ("БАЛАНС, ДЕЙСТВИЙ", str(sum(r["bal"] for r in rows)), "#4fd1c5"),
+                 ("ВЫЗОВОВ В ЧАС (СРЕДНЕЕ)", f"{nc / (on / 3600):.1f}" if on >= 600 else "-", T.TEXT),
+                 ("ПРОВЕРОК ЗА ПЕРИОД", str(rep["checks"]), T.MUTED)]
+        gap = 10
+        tw = (w - gap * (len(items) - 1)) / len(items)
+        for i, (lab, val, col) in enumerate(items):
+            x = i * (tw + gap)
+            tiles.create_rectangle(x, 2, x + tw, 68, fill=T.CARD, outline=T.CARD_EDGE)
+            tiles.create_text(x + 14, 18, text=lab, anchor="w", fill=T.MUTED, font=("Segoe UI", 8, "bold"))
+            tiles.create_text(x + 14, 46, text=val, anchor="w", fill=col, font=("Segoe UI", 16, "bold"))
+
+    def fill():
+        rows = visible()
+        tv.delete(*tv.get_children())
+        for i, r in enumerate(rows):
+            tags = (["odd"] if i % 2 else []) + ([] if r["calls"] or r["bal"] else ["zero"])
+            tv.insert("", "end", iid=r["uid"], values=[_cell(r, c[0]) for c in REP_COLS], tags=tags)
+        k, rev = S["sort"]
+        for c, hdr, _, _ in REP_COLS:
+            tv.heading(c, text=hdr + ((" ▼" if rev else " ▲") if c == k else ""))
+        draw_tiles(rows)
+        rep = S["rep"]
+        hint.configure(text=(f"Двойной щелчок - статистика человека. В сети / катал - по проверкам: чем чаще "
+                             f"проверки, тем точнее." if rep["checks"] else
+                             "За период проверок не было - статистика копится с каждой проверкой (с версии 1.55)."))
+
+    def refresh(e=None):
+        S["rep"] = report(per_var.get(), current=current)
+        S["rows"] = S["rep"]["rows"]
+        depts = sorted({r["dept"] for r in S["rows"] if r["dept"] and r["dept"] != "?"})
+        dcb.configure(values=["все"] + depts)
+        if dept_var.get() not in ["все"] + depts:
+            dept_var.set("все")
+        fill()
+
+    def copy():
+        d.clipboard_clear()
+        d.clipboard_append(report_text(S["rep"], visible()))
+        hint.configure(text="Таблица скопирована - вставляется в Excel / Google Таблицы")
+
+    def save_csv():
+        import csv
+        name = f"Отчёт PM {datetime.now():%Y-%m-%d}.csv"
+        p = filedialog.asksaveasfilename(parent=d, defaultextension=".csv", initialfile=name,
+                                         filetypes=[("CSV (Excel)", "*.csv")])
+        if not p:
+            return
+        try:
+            with open(p, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow([c[1] for c in REP_COLS])
+                for r in visible():
+                    w.writerow([_cell(r, c[0]) for c in REP_COLS])
+            hint.configure(text=f"Сохранено: {p}")
+        except OSError as ex:
+            hint.configure(text=f"Не сохранилось: {ex}")
+
+    def on_double(e):
+        uid = tv.identify_row(e.y)
+        if uid:
+            open_window(d, uid, current.get(uid) or {}, (marks or {}).get(uid) or {}, (shots or {}).get(uid))
+    tv.bind("<Double-1>", on_double)
+    cb.bind("<<ComboboxSelected>>", refresh)
+    dcb.bind("<<ComboboxSelected>>", lambda e: fill())
+    q_var.trace_add("write", lambda *a: fill())
+    tiles.bind("<Configure>", lambda e: S["rep"] and draw_tiles(visible()))
+    d.bind("<Escape>", lambda e: d.destroy())
+    d.after(60, refresh)
     return d

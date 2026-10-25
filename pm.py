@@ -94,6 +94,7 @@ def build_pm_tab(parent, afk=False):
     ttk.Button(bar2, text="Настроить фильтр…", command=lambda: filter_dialog()).pack(side="left", padx=4)
     white_btn = ttk.Button(bar2, text="Вайтлист…", command=lambda: white_dialog())
     white_btn.pack(side="left", padx=4)
+    ttk.Button(bar2, text="📊 Отчёт…", command=lambda: report_open()).pack(side="left", padx=4)
     bar_rec = ttk.Frame(parent)
     bar_rec.pack(fill="x", padx=8, pady=(0, 4))
     import pm_screenrec
@@ -642,6 +643,11 @@ def build_pm_tab(parent, afk=False):
             return "break"
         stats_open(uid)
         return "break"
+
+    def report_open():
+        """Отчёт на всех за неделю (или другой период) по накопленной истории."""
+        emps = (st["snap"] or {}).get("employees", {})
+        PS.open_report(parent, emps, st["marks"], {u: b.get("shot") for u, b in st["bal"].items()})
 
     def stats_open(uid=None):
         """Окно статистики сотрудника (двойной щелчок по строке)."""
