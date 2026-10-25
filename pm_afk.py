@@ -720,6 +720,7 @@ class Tablet:
                             "last_type": last_type, "min": minutes,
                             "ago": round((now - (last.timestamp() - shift)) / 60) if last else None,
                             "n": n, "full": n >= len(mine) and len(mine) >= 14, "types": types,
+                            "rows": [[r["date"].strftime("%d.%m.%Y %H:%M"), r["type"]] for r in mine],
                             "shot": self.save(img)}
             self.click(*BAL_SEARCH, 0.2)                       # поиск очистить - в следующий раз таблица полная
             self.inp.key("Ctrl", True)

@@ -11,6 +11,7 @@ import threading
 
 import pm_ocr
 import pm_track as PT
+import pm_stats as PS
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp")
 NEW_ROUND = 5 * 60          # скрин «Коллеги» позже прошлых на столько секунд - новая проверка
@@ -457,6 +458,11 @@ def build_pm_tab(parent, afk=False):
                 msg.set(f"Порядок не сохранился: {ex}")
         apply_marks(snap)
         st["snap"] = snap
+        try:                                                           # история каждого (окно статистики)
+            ts = [s["t"] for s in st["shots"] if s["res"] and s["res"].get("kind") == "colleagues"]
+            PS.record_snap(snap, max(ts) if ts else None)
+        except Exception:
+            pass
         fill(snap)
 
     def view(s):
@@ -536,7 +542,8 @@ def build_pm_tab(parent, afk=False):
         if snap["unknown"]:
             info.append(f"строк без статика: {len(snap['unknown'])}")
         if any(e.get("doubt") for e in emps):
-            info.append("⚠ жёлтые - проверь (двойной щелчок - исправить)")
+            info.append("⚠ жёлтые - проверь (Enter или правый щелчок - исправить)")
+        info.append("двойной щелчок - статистика")
         msg.set("  ·  ".join(info))
 
     # ---- правка вручную
@@ -633,7 +640,16 @@ def build_pm_tab(parent, afk=False):
             return "break"
         if col == "comment":
             return "break"
-        edit()
+        stats_open(uid)
+        return "break"
+
+    def stats_open(uid=None):
+        """Окно статистики сотрудника (двойной щелчок по строке)."""
+        uid = uid or (et.selection() or [None])[0]
+        if not uid:
+            return
+        emp = (st["snap"] or {}).get("employees", {}).get(uid) or {}
+        PS.open_window(parent, uid, emp, st["marks"].get(uid) or {}, (st["bal"].get(uid) or {}).get("shot"))
 
     def edit_comment(uid):
         if not et.exists(uid) or not et.bbox(uid, "comment"):
@@ -861,6 +877,8 @@ def build_pm_tab(parent, afk=False):
         et.selection_set(uid)
         emp = st["snap"]["employees"][uid]
         menu.delete(0, "end")
+        menu.add_command(label="📊 Статистика…", command=lambda: stats_open(uid))
+        menu.add_separator()
         if PT.in_white(uid, emp, cfg["white"]):
             menu.add_command(label="Убрать из вайтлиста", command=lambda: white_remove(uid, emp))
         else:
@@ -996,6 +1014,10 @@ def build_pm_tab(parent, afk=False):
 
     def balance_done(res, err, dur, folder):
         st["bal"].update(res)
+        try:
+            PS.record_balance(res)
+        except Exception:
+            pass
         work = [b["name"] for b in res.values() if b.get("n")]
         idle = [b["name"] for b in res.values() if not b.get("n")]
         win = window()
@@ -1018,6 +1040,10 @@ def build_pm_tab(parent, afk=False):
             return
         if bal is not None:
             st["bal"] = dict(bal)                       # новая проверка - старый баланс не тянем
+            try:
+                PS.record_balance(bal)
+            except Exception:
+                pass
         prev_snap = st["snap"]
         now = time.time()
         st["shots"][:] = [{"path": p, "name": os.path.basename(os.path.dirname(p)) + "/" + os.path.basename(p),
