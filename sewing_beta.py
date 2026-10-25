@@ -40,7 +40,7 @@ LAT_VIS = 0.02            # с: задержка от нажатия до сни
 PULSE_LOSS = 0.006        # с: столько игра «съедает» от каждого нажатия A/D (запись 20261020_191855: короткие нажатия давали ~75% поворота)
 CORNER_K = 0.15           # 1/px: линия впереди не прослеживается посреди сетки = острый угол, тормозим до него
 MIN_TURN = 1.0            # град: меньше - не крутим
-K_TURN = 1.45              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха);
+K_TURN = 1.3              # запас по повороту на изгибах: >1 - смелее (срезает углы в пределах ширины штриха);
                           # 1.3 -> 1.7 (v1.49.0): виртуальная швейка -1,4..-1,6 с на комплект, мимо узора ~1,5 с (красная ~9%)
 
 # скорость машинки (0 = зелёная иконка, 1 = красная)
@@ -966,10 +966,14 @@ CONFIG_PATH = os.path.join(app_dir(), "sewing_beta_config.json")
 
 def load_config():
     global K_TURN
-    cfg = {"start_vk": VK_START, "exit_vk": VK_EXIT, "auto_repeat": AUTO_REPEAT, "k_turn": K_TURN}
+    cfg = {"start_vk": VK_START, "exit_vk": VK_EXIT, "auto_repeat": AUTO_REPEAT, "k_turn": K_TURN, "kv": 2}
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            saved = json.load(f)
+        if int(saved.get("kv", 1)) < 2:              # v1.54.1: смелость по умолч. 1.45 -> 1.3 (запись 20261025_153939)
+            saved.pop("k_turn", None)
+        cfg.update(saved)
+        cfg["kv"] = 2
     except Exception:
         pass
     try:
@@ -1055,7 +1059,7 @@ def build_bot_tab(parent, request_close=None):
     kt_var = tk.StringVar(value=f"{K_TURN:.2f}")
     ttk.Label(parent, text="Смелость в поворотах:").grid(row=3, column=0, sticky="w", **pad)
     ttk.Spinbox(parent, from_=1.0, to=2.0, increment=0.05, width=6, textvariable=kt_var).grid(row=3, column=1, sticky="w", **pad)
-    ttk.Label(parent, text="1.30 - как обычная, 1.45 - по умолч., 1.60 - быстрее (больше мимо узора)",
+    ttk.Label(parent, text="1.30 - по умолч. (как обычная), 1.45-1.60 - быстрее на прямых, но больше мимо узора в углах",
               style="Muted.TLabel").grid(row=3, column=2, sticky="w", **pad)
 
     def kt_changed(*a):
@@ -1071,7 +1075,7 @@ def build_bot_tab(parent, request_close=None):
 
     def persist():
         save_config({"start_vk": ctrl.start_vk, "exit_vk": ctrl.exit_vk,
-                     "auto_repeat": ctrl.auto_repeat, "k_turn": K_TURN})
+                     "auto_repeat": ctrl.auto_repeat, "k_turn": K_TURN, "kv": 2})
 
     def on_auto():
         ctrl.auto_repeat = auto_var.get()

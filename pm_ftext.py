@@ -314,6 +314,12 @@ def build_f_tab(frame, cfg, save_cfg, msg):
     info_lbl = ttk.Label(frame, textvariable=info_var, style="Muted.TLabel", wraplength=600, justify="left")
     info_lbl.pack(fill="x", pady=(2, 0))
     info_lbl.bind("<Configure>", lambda e: info_lbl.configure(wraplength=max(200, e.width - 10)))
+    # низ - прижат к низу и упакован раньше очереди: когда места мало (в основной программе выше блок
+    # автоматической проверки), сжимается очередь, а не кнопки
+    for w, pady in ((info_lbl, (2, 0)), (c1b, 2), (c1, 2), (nxt, (4, 2))):
+        w.pack_forget()
+        w.pack(side="bottom", fill="x", pady=pady, before=mid)
+    tv.configure(height=4)
 
     # ================================================================ данные
     def tpl_names():
