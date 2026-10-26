@@ -247,15 +247,16 @@ def main():
              "build": "Стройка", "test": "Тест"}
 
     # Боты на проверке: (ключ, название вкладки, модуль, функция сборки вкладки). Новый бот - одна строка сюда.
-    TEST_BOTS = [("sewbeta", "Швейка (бета)", "sewing_beta", "build_bot_tab"),
+    TEST_BOTS = [("grill", "Гриль", "grill", "build_grill_tab"),
+                 ("sewbeta", "Швейка (бета)", "sewing_beta", "build_bot_tab"),
                  ("click", "Кликер", "clicker", "build_clicker_tab")]
     PACKS = {"test": TEST_BOTS}
-    names.update(click="Кликер", sewbeta="Швейка (бета)")
+    names.update(click="Кликер", sewbeta="Швейка (бета)", grill="Гриль")
 
     def _bundle():
         """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
         Новый бот в TEST_BOTS - дописать и сюда."""
-        import clicker, sewing_beta  # noqa: F401
+        import clicker, sewing_beta, grill  # noqa: F401
 
     def make_pack(pkey):
         """Страница-пак («Тест», «Стройка»): сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""

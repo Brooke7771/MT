@@ -104,7 +104,8 @@ _hooks = []
 _wipe = {"pending": False}
 BOT_FILES = ("fishing_config.json", "sewing_bot_config.json", "antiafk_config.json", "sewing_debug.png",
              "stats.json", "sanding_config.json", "clicker_config.json", "woodcut_config.json",
-             "mining_config.json", "gym_config.json", "farm_config.json", "stroyka_config.json", "sewing_beta_config.json")
+             "mining_config.json", "gym_config.json", "farm_config.json", "stroyka_config.json", "sewing_beta_config.json",
+             "grill_config.json")
 BOT_DIRS = ("antiafk_templates", "fish_samples")
 BOT_GLOBS = ("debug_fishing_*",)
 
