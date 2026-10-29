@@ -200,7 +200,8 @@ class FishHero(Hero):
         self.keycap(sw - 34, 78, "D", held == "D")
         # правая карточка
         rate = f"{self.rate}"
-        extra = [("Забросов", str(self.shown("Забросов"))), ("Поклёвок", str(self.shown("Поклёвок"))),
+        kg = d.get("kg") or 0.0
+        extra = [("Забрал, кг", f"{kg:.2f}".replace(".", ",")), ("Поклёвок", str(self.shown("Поклёвок"))),
                  ("В час", rate), ("Время", fmt_time(self.sec))]
         self.counter_card(sw + 10, W, "Поймано", extra, (d.get("life") or {}).get("count"))
 

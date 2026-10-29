@@ -89,10 +89,15 @@ def bite(img):
     a, _, _ = crop(img, FLOAT_BOX)
     return (a.min(axis=2) > 150).mean() > 0.012
 
+def bar_fish_on(img):
+    """Белая рыбка на полоске прогресса вываживания."""
+    a, _, _ = crop(img, BAR_BAND)
+    return (a.min(axis=2) > 200).sum() > 40 * (img.shape[1] / BASE_W) ** 2
+
+
 def minigame_on(img):
     """Полоска прогресса с белой рыбкой (подсказок Esc/Space в это время нет)."""
-    a, _, _ = crop(img, BAR_BAND)
-    return (a.min(axis=2) > 200).sum() > 40 * (img.shape[1] / BASE_W) ** 2 and not hints_on(img)
+    return bar_fish_on(img) and not hints_on(img)
 
 PROG_FILL = (688, 894, 1226, 902)   # заливка полоски прогресса (жёлтая -> зелёная)
 
@@ -272,6 +277,70 @@ def save_sample(img, info):
                           (info.get("text") or "").replace(";", ","), str(info.get("kg") or ""),
                           "да" if info.get("record") else "", f"{img.shape[1]}x{img.shape[0]}"]) + "\n")
     return fn
+
+
+# ================================================================ журнал улова (какая рыба, сколько кг)
+CATCH_PATH = os.path.join(AF.app_dir(), "fish_catch.json")
+CATCH = {"rows": None, "ver": 0}        # rows: [[время, название или "", кг или None, "keep"/"release"]]
+_catch_lock = threading.Lock()
+UNKNOWN_FISH = "Не прочитано"
+
+
+def catch_rows():
+    with _catch_lock:
+        if CATCH["rows"] is None:
+            try:
+                with open(CATCH_PATH, encoding="utf-8") as f:
+                    CATCH["rows"] = [r for r in json.load(f) if isinstance(r, list) and len(r) == 4]
+            except Exception:
+                CATCH["rows"] = []
+        return list(CATCH["rows"])
+
+
+def catch_add(name, kg, act, t=None):
+    catch_rows()
+    with _catch_lock:
+        CATCH["rows"].append([t or time.time(), name or "", kg, act])
+        CATCH["ver"] += 1
+        rows = list(CATCH["rows"])
+    try:
+        with open(CATCH_PATH + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        os.replace(CATCH_PATH + ".tmp", CATCH_PATH)
+    except Exception:
+        pass
+
+
+def catch_clear():
+    with _catch_lock:
+        CATCH["rows"] = []
+        CATCH["ver"] += 1
+    try:
+        os.remove(CATCH_PATH)
+    except OSError:
+        pass
+
+
+def catch_summary(rows, since=0.0, act="keep"):
+    """-> (по рыбам [(название, штук, кг всего, самая крупная, штук без веса)] по убыванию кг, итог)."""
+    by = {}
+    for t, name, kg, a in rows:
+        if t < since or (act != "all" and a != act):
+            continue
+        r = by.setdefault(name or UNKNOWN_FISH, [0, 0.0, 0.0, 0])
+        r[0] += 1
+        if kg:
+            r[1] += kg
+            r[2] = max(r[2], kg)
+        else:
+            r[3] += 1
+    out = sorted(((n, *v) for n, v in by.items()), key=lambda r: (-r[2], -r[1], r[0]))
+    tot = (sum(r[1] for r in out), sum(r[2] for r in out), max([r[3] for r in out] or [0.0]), sum(r[4] for r in out))
+    return out, tot
+
+
+def fmt_kg(kg):
+    return f"{kg:.2f}".replace(".", ",") + " кг"
 
 
 def button_center(img, which):
@@ -533,9 +602,11 @@ class Tracker:
     не сбрасывается: если данных нет - держим последнее (отпущенная клавиша = откат)."""
 
     USE_PLATE = False      # True - добавлять скорость иконки (старый режим "иконка - фон")
-    TAU = 0.3              # с: сглаживание скорости
-    VTH = 3.0              # px/с на 1080p: порог уверенной скорости
-    CONFIRM = 0.2          # с: сколько новая сторона должна держаться для смены
+    # запись 20261029_213131 (повтор трекера по сдвигам фона): 0.3/0.2/3 - разворот рыбы замечали
+    # через 0,37 с, 0.15/0.1/5 - через 0,15 с, лишних смен нет (и на 20261020_231750 тоже)
+    TAU = 0.15             # с: сглаживание скорости
+    VTH = 5.0              # px/с на 1080p: порог уверенной скорости
+    CONFIRM = 0.1          # с: сколько новая сторона должна держаться для смены
 
     def __init__(self):
         self.plate = PlateTracker()
@@ -633,12 +704,15 @@ class Fisher:
         self.e_tries = 0
         self.ui_seen = 0.0
         self.in_fight = False
-        self.prog = []                 # (время, прогресс px) последних ~2 с вываживания
+        self.prog = []                 # (время, прогресс px) последних ~6 с вываживания
         self.key_t = 0.0               # когда последний раз сменили клавишу
         self.fb_until = 0.0            # до какого момента клавиша навязана обратной связью
         self.fb_key = None
+        self.fb_rate = 0.0             # скорость прогресса до проверки другой клавиши
+        self.fb_off = None             # проверка не помогла: не спорим с трекером, пока он держит эту сторону
+        self.vh = []                   # (время, |скорость фона|) - уверенность трекера
         self.tracker = Tracker()
-        self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0, "fish": {}}
+        self.stats = {"casts": 0, "bites": 0, "kept": 0, "released": 0, "fish": {}, "kg": 0.0}
         self.state = "Жду"
         self.dbg = {}
         self.recorder = None
@@ -744,29 +818,60 @@ class Fisher:
                 break
         return info, last
 
-    FALL_PX = 5.0          # px (1080p): падение прогресса за окно, после которого считаем клавишу неверной
-    FALL_WIN = 0.7         # с: окно оценки (и минимум с момента смены клавиши)
-    FB_LOCK = 1.5          # с: сколько держим навязанную клавишу, не слушая трекер
+    # Запись 20261029_213131 (тяжёлый крючок, бои по 80-190 с вместо ~40): игра отвечает на клавишу
+    # МЕДЛЕННО - верную клавишу надо держать 2-5 с, пока прогресс не разгонится (0 -> +16 px/с),
+    # а сразу после разворота рыбы он ещё падает и при верной. Старая обратная связь (падение 5 px
+    # за 0,7 с -> сменить на 1,5 с) на тяжёлой рыбе дёргала A/D каждые ~1,5 с: в таких фазах
+    # прогресс падал -9 px/с при ЛЮБОЙ клавише, а где бот спокойно держал D - около 0..+5.
+    FALL_PX = 15.0         # px (1080p): падение прогресса за окно, после которого клавиша под подозрением
+    FALL_WIN = 2.5         # с: окно оценки (и минимум с момента смены клавиши)
+    FB_LOCK = 3.0          # с: сколько держим навязанную клавишу, не слушая трекер
+    FB_SURE = 6.0          # трекер уверен (|скорость фона| > FB_SURE x порог 3/4 окна) - не спорим с ним
 
     def _feedback(self, want, now, k):
-        """Сама полоска прогресса - главный судья: если при текущей клавише она падает
-        (трекер у берега ошибается из-за шума фона), меняем клавишу вопреки трекеру и
-        на время FB_LOCK не даём трекеру вернуть её обратно."""
-        if now < self.fb_until and self.fb_key:
-            return self.fb_key
+        """Полоска прогресса - запасной судья, когда трекер сам не уверен (у берега фон шумит):
+        если при текущей клавише прогресс долго падает, пробуем другую на FB_LOCK. Не помогло
+        (падало так же) - возвращаем клавишу трекера и до следующего разворота рыбы не спорим."""
+        tr = self.tracker
+        if self.fb_off is not None and tr.last_dir != self.fb_off:
+            self.fb_off = None                        # рыба развернулась - снова можно проверять
+        if self.fb_key:
+            if now < self.fb_until:
+                return self.fb_key
+            # проверка закончилась: помогла ли другая клавиша
+            rate = self._prog_rate(self.fb_until - self.FB_LOCK + 1.0, now)
+            if rate is not None and rate <= self.fb_rate + 2.0:
+                tr.last_dir = -tr.last_dir if tr.last_dir else 0
+                tr.pending = 0
+                want = "D" if self.fb_key == "A" else "A"
+                self.fb_off = tr.last_dir
+                self.log(f"Другая клавиша не помогла ({rate:+.0f} px/с) - вернул {want}")
+            self.fb_key = None
+            return want
         held = self.held
-        if held and now - self.key_t >= self.FALL_WIN and self.prog:
-            t_ago = now - self.FALL_WIN
-            old = [v for t, v in self.prog if t <= t_ago and t >= self.key_t]
-            cur = self.prog[-1][1]
-            if old and cur > 12 and old[-1] - cur >= self.FALL_PX:
-                new = "D" if held == "A" else "A"
-                self.fb_key, self.fb_until = new, now + self.FB_LOCK
-                self.tracker.last_dir = -self.tracker.last_dir if self.tracker.last_dir else 0
-                self.tracker.pending = 0
-                self.log(f"Прогресс падает ({old[-1]:.0f} -> {cur:.0f}) - меняю клавишу на {new}")
-                return new
+        if not held or self.fb_off is not None or now - self.key_t < self.FALL_WIN or not self.prog:
+            return want
+        vth = tr.VTH * k
+        if self.vh and np.percentile([v for t, v in self.vh if t >= now - self.FALL_WIN], 25) > self.FB_SURE * vth:
+            return want
+        old = [v for t, v in self.prog if now - self.FALL_WIN - 0.3 <= t <= now - self.FALL_WIN]
+        cur = self.prog[-1][1]
+        if old and cur > 12 and old[-1] - cur >= self.FALL_PX:
+            new = "D" if held == "A" else "A"
+            self.fb_rate = (cur - old[-1]) / self.FALL_WIN
+            self.fb_key, self.fb_until = new, now + self.FB_LOCK
+            tr.last_dir = -tr.last_dir if tr.last_dir else 0
+            tr.pending = 0
+            self.log(f"Прогресс падает ({old[-1]:.0f} -> {cur:.0f}) - пробую {new}")
+            return new
         return want
+
+    def _prog_rate(self, t0, t1):
+        """px/с прогресса между t0 и t1 (по точкам self.prog) или None."""
+        pts = [(t, v) for t, v in self.prog if t0 <= t <= t1]
+        if len(pts) < 2 or pts[-1][0] - pts[0][0] < 0.5:
+            return None
+        return (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
 
     def _step(self, shot, H, W, now):
         cfg = self.cfg
@@ -792,6 +897,9 @@ class Fisher:
                 x, y = button_center(shot, act)
                 self.inp.click(x, y)
                 self.stats["kept" if act == "keep" else "released"] += 1
+                if act == "keep" and info["kg"]:
+                    self.stats["kg"] += info["kg"]
+                catch_add(info["name"], info["kg"], act)
                 what = "рыба" if info["name"] is None else info["name"]
                 if info["name"]:
                     self.stats["fish"][what] = self.stats["fish"].get(what, 0) + 1
@@ -802,6 +910,10 @@ class Fisher:
             return
 
         mg = minigame_on(shot)
+        if not mg and self.in_fight and bar_fish_on(shot) and progress_px(shot) is not None:
+            # бой идёт, а «подсказки» справа внизу - чужое окошко (уведомление Discord/Steam на записи
+            # 20261029_213131 закрыло их на 5 с, бот отпустил клавиши посреди боя)
+            mg = True
         if mg and not self.in_fight and progress_px(shot) is None:
             # без заливки прогресса - не бой: после заброса белые уведомления внизу попадают
             # на полоску, и бот 2-3 с жал A/D впустую (запись 20261020_231750). Рыбалка при этом идёт.
@@ -816,12 +928,15 @@ class Fisher:
                 self.in_fight = True
                 self.tracker.reset()
                 self.prog = []
+                self.vh = []
                 self.fb_until = 0.0
+                self.fb_key = self.fb_off = None
                 self.log("Рыба на крючке, тяну")
             d = self.tracker.update(shot, cfg["zone"] or sc(ZONE, W, H), now)
             p = progress_px(shot)
             if p is not None:
-                self.prog = [(t, v) for t, v in self.prog if now - t < 2.0] + [(now, p)]
+                self.prog = [(t, v) for t, v in self.prog if now - t < 6.0] + [(now, p)]
+            self.vh = [(t, v) for t, v in self.vh if now - t < 3.0] + [(now, abs(self.tracker.v))]
             if d is not None:
                 self.last_seen = now
                 want = "D" if d < 0 else "A"
@@ -924,8 +1039,17 @@ def build_fishing_tab(parent):
     ttk.Label(parent, textvariable=key_var, style="Key.TLabel", width=16).grid(row=3, column=1, sticky="w", **pad)
     ttk.Button(parent, text="Назначить", command=lambda: bind_key()).grid(row=3, column=2, sticky="w", **pad)
 
-    cyc = ttk.LabelFrame(parent, text="Цикл рыбалки")
-    cyc.grid(row=4, column=0, columnspan=4, sticky="ew", **pad)
+    # ниже - вкладки: всё на одной странице не влезало в окно (с таблицей улова - тем более)
+    nb = ttk.Notebook(parent)
+    nb.grid(row=4, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
+    parent.columnconfigure(3, weight=1)
+    parent.rowconfigure(4, weight=1)
+    tab_cyc, tab_cat, tab_set, tab_log = (ttk.Frame(nb, padding=(8, 4)) for _ in range(4))
+    for fr_, name in ((tab_cyc, "Цикл рыбалки"), (tab_cat, "Улов"), (tab_set, "Настройка и отладка"), (tab_log, "Журнал")):
+        nb.add(fr_, text=name)
+        fr_.columnconfigure(3, weight=1)
+    cyc = ttk.LabelFrame(tab_cyc, text="Цикл рыбалки")
+    cyc.grid(row=0, column=0, columnspan=4, sticky="ew", **pad)
     v = {k: tk.BooleanVar(value=cfg[k]) for k in ("auto_start", "auto_cast", "auto_hook", "invert", "focus_only")}
     ttk.Checkbutton(cyc, text="1. Сам начинать рыбалку клавишей E", variable=v["auto_start"],
                     command=lambda: save()).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
@@ -955,7 +1079,7 @@ def build_fishing_tab(parent):
 
     def show_filter():
         if cfg["after_catch"] != "filter":
-            filter_var.set("Название и вес каждой рыбы - в журнале. Свой выбор рыб - кнопка «Список рыб...».")
+            filter_var.set("Название и вес каждой рыбы - во вкладке «Улов» и в журнале. Свой выбор рыб - кнопка «Список рыб...».")
             return
         rel = [n for n, *_ in FISH if n in cfg["fish_release"]]
         filter_var.set(f"По списку: забираю {len(FISH) - len(rel)} из {len(FISH)} рыб" +
@@ -1033,8 +1157,8 @@ def build_fishing_tab(parent):
         except Exception:
             pass
 
-    opt = ttk.LabelFrame(parent, text="Тонкая настройка")
-    opt.grid(row=5, column=0, columnspan=4, sticky="ew", **pad)
+    opt = ttk.LabelFrame(tab_set, text="Тонкая настройка")
+    opt.grid(row=0, column=0, columnspan=4, sticky="ew", **pad)
     ttk.Checkbutton(opt, text="Поменять A и D местами (если бот тянет не туда)", variable=v["invert"],
                     command=lambda: save()).grid(row=0, column=0, columnspan=3, sticky="w", **pad)
     ttk.Checkbutton(opt, text="Только когда активно окно игры", variable=v["focus_only"],
@@ -1052,8 +1176,83 @@ def build_fishing_tab(parent):
     ttk.Button(zr, text="Сбросить", command=lambda: (cfg.update(zone=None), save(), show_zone())).pack(side="left", padx=4)
     ttk.Label(zr, textvariable=zone_var, style="Muted.TLabel").pack(side="left", padx=6)
 
-    dbgf = ttk.LabelFrame(parent, text="Отладка")
-    dbgf.grid(row=7, column=0, columnspan=4, sticky="ew", **pad)
+    # ---------------------------------------------------------------- улов: какая рыба и сколько кг
+    catf = ttk.LabelFrame(tab_cat, text="Какую рыбу поймал бот")
+    catf.grid(row=0, column=0, columnspan=4, sticky="nsew", **pad)
+    tab_cat.rowconfigure(0, weight=1)
+    catf.rowconfigure(2, weight=1)
+    catf.columnconfigure(0, weight=1)
+    t_start = time.time()
+    PERIODS = {"За этот запуск": None, "Сегодня": "day", "7 дней": 7, "30 дней": 30, "Всё время": 0}
+    WHAT = {"Забрал себе": "keep", "Отпустил": "release", "Всё": "all"}
+    ctop = ttk.Frame(catf)
+    ctop.grid(row=0, column=0, sticky="ew", **pad)
+    per_var, what_var = tk.StringVar(value="За этот запуск"), tk.StringVar(value="Забрал себе")
+    for var, vals, w in ((per_var, PERIODS, 15), (what_var, WHAT, 12)):
+        cb = ttk.Combobox(ctop, textvariable=var, values=list(vals), state="readonly", width=w)
+        cb.pack(side="left", padx=(0, 6))
+        cb.bind("<<ComboboxSelected>>", lambda e: show_catch())
+    ttk.Button(ctop, text="Копировать", command=lambda: copy_catch()).pack(side="right", padx=2)
+    ttk.Button(ctop, text="Очистить...", command=lambda: clear_catch()).pack(side="right", padx=2)
+    cat_sum = tk.StringVar()
+    ttk.Label(catf, textvariable=cat_sum, style="Status.TLabel").grid(row=1, column=0, sticky="w", **pad)
+    COLS = (("n", "Штук", 60), ("kg", "Всего", 90), ("max", "Самая крупная", 110), ("avg", "Средний вес", 100))
+    ctv = ttk.Treeview(catf, columns=[c for c, *_ in COLS], height=8, selectmode="browse")
+    ctv.heading("#0", text="Рыба", anchor="w")
+    ctv.column("#0", width=190, anchor="w")
+    for c, title, w in COLS:
+        ctv.heading(c, text=title)
+        ctv.column(c, width=w, anchor="e", stretch=False)
+    ctv.grid(row=2, column=0, sticky="nsew", **pad)
+    cat_state = {"ver": -1, "per": None, "what": None, "rows": []}
+
+    def catch_since():
+        p = PERIODS[per_var.get()]
+        if p is None:
+            return t_start
+        if p == "day":
+            lt = time.localtime()
+            return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        return time.time() - p * 86400 if p else 0.0
+
+    def show_catch(force=True):
+        key = (CATCH["ver"], per_var.get(), what_var.get())
+        if not force and key == (cat_state["ver"], cat_state["per"], cat_state["what"]):
+            return
+        cat_state.update(ver=key[0], per=key[1], what=key[2])
+        rows, (n, kg, mx, nokg) = catch_summary(catch_rows(), catch_since(), WHAT[what_var.get()])
+        cat_state["rows"] = rows
+        ctv.delete(*ctv.get_children())
+        for name, cnt, s_kg, s_max, s_no in rows:
+            have = cnt - s_no
+            ctv.insert("", "end", text=name, values=(cnt, fmt_kg(s_kg) if have else "-", fmt_kg(s_max) if have else "-",
+                                                    fmt_kg(s_kg / have) if have else "-"))
+        if not n:
+            cat_sum.set("Пока ничего" + (" - рыба появится здесь после первого улова" if per_var.get() == "За этот запуск"
+                                         else " за этот период"))
+            return
+        what = {"keep": "Забрал", "release": "Отпустил", "all": "Поймал"}[WHAT[what_var.get()]]
+        cat_sum.set(f"{what}: {n} шт., {fmt_kg(kg)}" + (f"  ·  самая крупная {fmt_kg(mx)}" if mx else "") +
+                    (f"  ·  вес не прочитан у {nokg}" if nokg else ""))
+
+    def copy_catch():
+        lines = [f"Улов ({per_var.get().lower()}, {what_var.get().lower()}): {cat_sum.get()}"]
+        for name, cnt, s_kg, s_max, s_no in cat_state["rows"]:
+            have = cnt - s_no
+            lines.append(f"{name}\t{cnt} шт.\t{fmt_kg(s_kg) if have else '-'}\tмакс {fmt_kg(s_max) if have else '-'}")
+        parent.clipboard_clear()
+        parent.clipboard_append("\n".join(lines))
+        log("Улов скопирован в буфер обмена")
+
+    def clear_catch():
+        from tkinter import messagebox
+        if messagebox.askyesno("Улов", "Стереть весь журнал улова (за всё время)?", parent=parent.winfo_toplevel()):
+            catch_clear()
+            show_catch()
+            log("Журнал улова очищен")
+
+    dbgf = ttk.LabelFrame(tab_set, text="Отладка")
+    dbgf.grid(row=1, column=0, columnspan=4, sticky="ew", **pad)
     ov_var = tk.BooleanVar(value=False)
     rec_var = tk.BooleanVar(value=False)
     rec_fight = tk.BooleanVar(value=True)
@@ -1092,7 +1291,7 @@ def build_fishing_tab(parent):
         if fi is not None and fi.prog and time.time() - fi.prog[-1][0] < 1.0:
             prog = max(0.0, min(1.0, fi.prog[-1][1] / 520.0))
         return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Поймано",
-                "progress": prog, "held": fi.held if fi is not None else None,
+                "progress": prog, "held": fi.held if fi is not None else None, "kg": s_.get("kg", 0.0),
                 "items": [("Забросов", s_.get("casts", 0)), ("Поклёвок", s_.get("bites", 0)),
                           ("Поймано", k + r)]}
     import widgets
@@ -1135,8 +1334,8 @@ def build_fishing_tab(parent):
             pass
     parent.after(500, overlay_tick)
 
-    logbox = tk.Text(parent, height=9, width=74, state="disabled", font=("Consolas", 9))
-    logbox.grid(row=8, column=0, columnspan=4, sticky="ew", **pad)
+    logbox = tk.Text(tab_log, height=9, width=74, state="disabled", font=("Consolas", 9))
+    logbox.grid(row=0, column=0, columnspan=4, sticky="ew", **pad)
 
     def save():
         for k, var in v.items():
@@ -1264,7 +1463,7 @@ def build_fishing_tab(parent):
             s_ = fi.stats
             ctl["status"] = fi.state
             ctl["info"] = (f"держу: {fi.held or '-'}   ·   забросов {s_['casts']}, поклёвок {s_['bites']}, "
-                           f"забрал {s_['kept']}, отпустил {s_['released']}")
+                           f"забрал {s_['kept']} ({fmt_kg(s_['kg'])}), отпустил {s_['released']}")
             time.sleep(0.02 if fi.state in ("Тяну рыбу", "Жду поклёвку") else 0.05)
         fi.hold(None)
         BUSY["on"] = False
@@ -1287,6 +1486,7 @@ def build_fishing_tab(parent):
             st_lbl.configure(style="StatusOn.TLabel" if s in ("Тяну рыбу", "Жду поклёвку", "Заброс", "Улов")
                              else "Status.TLabel")
             info_var.set(ctl["info"] if ctl["active"] else f"Включить: кнопка ниже или {vk_name(cfg['toggle_vk'])}")
+            show_catch(False)
         except tk.TclError:
             return
         parent.after(150, pump)
@@ -1302,6 +1502,7 @@ def build_fishing_tab(parent):
 
     show_zone()
     show_filter()
+    show_catch()
     threading.Thread(target=worker, daemon=True).start()
     parent.after(150, pump)
     return stop
