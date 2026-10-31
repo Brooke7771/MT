@@ -119,6 +119,17 @@ def build_pm_tab(parent, afk=False):
         ttk.Button(bar3, text="Проверить по балансу", style="Accent.TButton",
                    command=lambda: balance_check()).pack(side="left", padx=(16, 4))
         ttk.Label(bar3, text="(окно - внизу: «Работает - вызов или баланс за…»)", style="Muted.TLabel").pack(side="left")
+        import paths
+        if paths.APP != "MajesticPM":                  # только в основной программе
+            ttk.Button(bar3, text="🔗 Ссылки из Discord…", command=lambda: ds_open()).pack(side="right", padx=4)
+
+        def ds_open():
+            import dslinks
+            if afk_ui.get("ds") is not None and afk_ui["ds"].winfo_exists():
+                afk_ui["ds"].deiconify()
+                afk_ui["ds"].lift()
+                return
+            afk_ui["ds"] = dslinks.open_window(parent, cfg, save_cfg)
         afk_ui["var"] = tk.StringVar(value="Автоматическая проверка выключена: бот сам достаёт планшет, снимает скрины "
                                            "и смотрит баланс по таймеру")
         ttk.Label(parent, textvariable=afk_ui["var"], style="Muted.TLabel").pack(anchor="w", padx=10)

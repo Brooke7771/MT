@@ -256,7 +256,7 @@ def main():
     def _bundle():
         """Не вызывается: модули ботов «Теста» грузятся по имени, а так PyInstaller видит их и кладёт в exe.
         Новый бот в TEST_BOTS - дописать и сюда."""
-        import clicker, sewing_beta, grill  # noqa: F401
+        import clicker, sewing_beta, grill, dslinks  # noqa: F401
 
     def make_pack(pkey):
         """Страница-пак («Тест», «Стройка»): сверху переключатели ботов, ниже вкладка на каждого. -> функция остановки."""

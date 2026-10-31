@@ -38,7 +38,9 @@ def default_config():
             "fish_release": [],              # filter: какие рыбы отпускать (остальные - забирать)
             "fish_unknown": "keep",          # filter: название не прочиталось
             "keep_record": False,            # filter: «Рекордный улов» забирать всегда
-            "collect": False}                # сохранять снимок окна улова каждой новой рыбы (для настройки)
+            "collect": False,                # сохранять снимок окна улова каждой новой рыбы (для настройки)
+            "catch_overlay": True,           # карточка «Улов» поверх игры, пока рыбалка включена
+            "catch_side": "left"}
 
 
 def load_config():
@@ -826,7 +828,10 @@ class Fisher:
     FALL_PX = 15.0         # px (1080p): падение прогресса за окно, после которого клавиша под подозрением
     FALL_WIN = 2.5         # с: окно оценки (и минимум с момента смены клавиши)
     FB_LOCK = 3.0          # с: сколько держим навязанную клавишу, не слушая трекер
-    FB_SURE = 6.0          # трекер уверен (|скорость фона| > FB_SURE x порог 3/4 окна) - не спорим с ним
+    # Запись 20261029_223845 (v1.58.0, 16 боёв по 32-75 с): проверки другой клавиши не помогли ни разу -
+    # рыба на миг замирала (фон ~0), прогресс ещё падал после разворота, бот 3 с тянул не туда и терял
+    # 18-32 px у самого конца полоски. Теперь проверка - только когда трекер вообще не видит движения.
+    FB_BLIND = 2.0         # медиана |скорости фона| за окно ниже FB_BLIND x порог = трекер «слепой»
 
     def _feedback(self, want, now, k):
         """Полоска прогресса - запасной судья, когда трекер сам не уверен (у берега фон шумит):
@@ -852,7 +857,7 @@ class Fisher:
         if not held or self.fb_off is not None or now - self.key_t < self.FALL_WIN or not self.prog:
             return want
         vth = tr.VTH * k
-        if self.vh and np.percentile([v for t, v in self.vh if t >= now - self.FALL_WIN], 25) > self.FB_SURE * vth:
+        if not self.vh or np.median([v for t, v in self.vh if t >= now - self.FALL_WIN]) > self.FB_BLIND * vth:
             return want
         old = [v for t, v in self.prog if now - self.FALL_WIN - 0.3 <= t <= now - self.FALL_WIN]
         cur = self.prog[-1][1]
@@ -1196,6 +1201,21 @@ def build_fishing_tab(parent):
     ttk.Button(ctop, text="Очистить...", command=lambda: clear_catch()).pack(side="right", padx=2)
     cat_sum = tk.StringVar()
     ttk.Label(catf, textvariable=cat_sum, style="Status.TLabel").grid(row=1, column=0, sticky="w", **pad)
+    covr = ttk.Frame(catf)
+    covr.grid(row=3, column=0, sticky="w", **pad)
+    cov_var = tk.BooleanVar(value=cfg["catch_overlay"])
+    SIDES = {"слева": "left", "справа": "right"}
+    side_var = tk.StringVar(value=next(k for k, v in SIDES.items() if v == cfg["catch_side"]))
+
+    def cov_changed(e=None):
+        cfg["catch_overlay"] = cov_var.get()
+        cfg["catch_side"] = SIDES[side_var.get()]
+        persist()
+    ttk.Checkbutton(covr, text="Показывать улов поверх игры (пока рыбалка включена)", variable=cov_var,
+                    command=cov_changed).pack(side="left")
+    scb = ttk.Combobox(covr, textvariable=side_var, values=list(SIDES), state="readonly", width=8)
+    scb.pack(side="left", padx=8)
+    scb.bind("<<ComboboxSelected>>", cov_changed)
     COLS = (("n", "Штук", 60), ("kg", "Всего", 90), ("max", "Самая крупная", 110), ("avg", "Средний вес", 100))
     ctv = ttk.Treeview(catf, columns=[c for c, *_ in COLS], height=8, selectmode="browse")
     ctv.heading("#0", text="Рыба", anchor="w")
@@ -1205,6 +1225,35 @@ def build_fishing_tab(parent):
         ctv.column(c, width=w, anchor="e", stretch=False)
     ctv.grid(row=2, column=0, sticky="nsew", **pad)
     cat_state = {"ver": -1, "per": None, "what": None, "rows": []}
+
+    cov = {"w": None, "focus_t": 0.0, "in_game": False}
+
+    def catch_overlay_tick():
+        """Карточка «Улов» поверх игры: только пока рыбалка включена и игра на переднем плане."""
+        try:
+            now = time.time()
+            if now - cov["focus_t"] > 0.6:
+                cov["focus_t"] = now
+                t_ = AF.foreground_title().lower()
+                cov["in_game"] = any(g in t_ for g in ("gta", "rage", "majestic", "grand theft"))
+            want = cfg["catch_overlay"] and ctl["active"] and cov["in_game"]
+            if want:
+                if cov["w"] is None:
+                    import fishing_debug as FD
+                    cov["w"] = FD.CatchOverlay(parent.winfo_toplevel())
+                rows_all = [r for r in catch_rows() if r[0] >= t_start]
+                rows, tot = catch_summary(rows_all, t_start, "keep")
+                last = rows_all[-1] if rows_all else None
+                flash = max(0.0, 1 - (now - last[0]) / 8.0) if last else 0.0
+                cov["w"].draw(rows, tot[:2], (last[1] or None, last[2], last[3]) if last and flash > 0 else None,
+                              cfg["catch_side"], flash)
+            elif cov["w"] is not None:
+                cov["w"].hide()
+        except tk.TclError:
+            return
+        except Exception:
+            pass
+        parent.after(250, catch_overlay_tick)
 
     def catch_since():
         p = PERIODS[per_var.get()]
@@ -1499,10 +1548,13 @@ def build_fishing_tab(parent):
             fi.recorder.close()
         if shared.get("overlay") is not None:
             shared["overlay"].destroy()
+        if cov["w"] is not None:
+            cov["w"].destroy()
 
     show_zone()
     show_filter()
     show_catch()
+    parent.after(1000, catch_overlay_tick)
     threading.Thread(target=worker, daemon=True).start()
     parent.after(150, pump)
     return stop

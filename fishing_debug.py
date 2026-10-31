@@ -244,3 +244,100 @@ class Overlay:
             self.win.destroy()
         except Exception:
             pass
+
+class CatchOverlay:
+    """Карточка «Улов» поверх игры: итог за запуск, рыбы по весу, только что пойманная.
+    Маленькое окно, клики сквозь, без фокуса, спрятано от снимков экрана (бот его не видит)."""
+
+    KEY = "#010203"
+    W = 286
+    CARD, EDGE, TEXT, MUTED = "#13131a", "#262630", "#ececf2", "#8a8a96"
+    ACC, OK = "#38c6e0", "#46d36b"
+    ROWS = 5                        # сколько рыб показывать, остальные - «и ещё N»
+
+    def __init__(self, root):
+        import tkinter as tk
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg=self.KEY)
+        try:
+            self.win.attributes("-transparentcolor", self.KEY)
+        except Exception:
+            pass
+        self.cv = tk.Canvas(self.win, width=self.W, height=60, bg=self.KEY, highlightthickness=0, bd=0)
+        self.cv.pack()
+        self.win.withdraw()
+        self.win.update_idletasks()
+        self.shown = False
+        Overlay._click_through_and_hide(self)
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                u = ctypes.windll.user32
+                hwnd = u.GetParent(self.win.winfo_id()) or self.win.winfo_id()
+                u.SetWindowLongW(hwnd, -20, u.GetWindowLongW(hwnd, -20) | 0x08000000)    # не активируется
+            except Exception:
+                pass
+
+    def hide(self):
+        if self.shown:
+            self.win.withdraw()
+            self.shown = False
+
+    def _t(self, x, y, s, size=9, bold=False, fill=None, anchor="w"):
+        self.cv.create_text(x, y, text=s, anchor=anchor, fill=fill or self.TEXT,
+                            font=("Segoe UI", size, "bold" if bold else "normal"))
+
+    def draw(self, rows, total, last, side="left", flash=0.0):
+        """rows - [(рыба, штук, кг, самая крупная, без веса)], total - (штук, кг), last - (рыба, кг, act) или None,
+        flash - 1..0, пока свежий улов подсвечен."""
+        from widgets import _rrect, mix
+        fmt = lambda kg: f"{kg:.2f}".replace(".", ",") + " кг"
+        n_show = min(len(rows), self.ROWS)
+        h = 52 + max(1, n_show) * 20 + (16 if len(rows) > n_show else 0) + (28 if last else 0)
+        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        x = 20 if side == "left" else sw - self.W - 20
+        y = int(sh * 0.46) if side == "left" else int(sh * 0.30)
+        self.win.geometry(f"{self.W}x{h}+{x}+{y}")
+        cv = self.cv
+        cv.configure(height=h)
+        cv.delete("all")
+        W = self.W
+        _rrect(cv, 0, 0, W - 1, h - 1, 14, fill=self.CARD, outline=mix(self.OK, self.EDGE, 1 - flash))
+        _rrect(cv, 0, 14, 4, h - 14, 2, fill=self.ACC, outline="")
+        self._t(16, 18, "⚓", 11, False, self.ACC)
+        self._t(36, 18, "Улов за запуск", 10, True)
+        n, kg = total
+        self._t(W - 14, 18, f"{n} шт · {fmt(kg)}", 10, True, mix(self.OK, self.TEXT, 1 - flash), "e")
+        cv.create_line(14, 36, W - 14, 36, fill=self.EDGE)
+        y = 50
+        if not rows:
+            self._t(16, y, "пока пусто - рыба появится здесь", 9, False, self.MUTED)
+            y += 20
+        for name, cnt, s_kg, s_max, s_no in rows[:n_show]:
+            nm = name if len(name) <= 22 else name[:21] + "…"
+            self._t(16, y, nm, 9)
+            self._t(W - 96, y, f"×{cnt}", 9, False, self.MUTED, "e")
+            self._t(W - 14, y, fmt(s_kg) if cnt > s_no else "-", 9, True, self.TEXT, "e")
+            y += 20
+        if len(rows) > n_show:
+            self._t(16, y - 4, f"и ещё {len(rows) - n_show}", 8, False, self.MUTED)
+            y += 16
+        if last:
+            name, lkg, act = last
+            keep = act == "keep"
+            col = mix(self.OK if keep else self.MUTED, self.TEXT, 0.15 * (1 - flash))
+            txt = ("+ " if keep else "отпустил ") + (name or "рыба") + (f"  {fmt(lkg)}" if lkg else "")
+            _rrect(cv, 10, y - 8, W - 10, y + 14, 8, fill=mix(col, self.CARD, 0.85 - 0.25 * flash), outline="")
+            self._t(18, y + 3, txt if len(txt) <= 38 else txt[:37] + "…", 9, True, col)
+        if not self.shown:
+            self.win.deiconify()
+            self.shown = True
+        self.win.attributes("-topmost", True)
+
+    def destroy(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
