@@ -176,7 +176,7 @@ FISH = [
     ("Токсичный окунь", 10, 1.53, 1.60), ("Древняя гинерия", 10, 2.11, 2.15),
 ]
 FISH_NAME = (788, 566, 1062, 604)    # название рыбы под картинкой
-FISH_KG = (1060, 566, 1112, 604)     # вес «0.75 KG»
+FISH_KG = (1050, 566, 1106, 604)     # вес «0.75» (без «KG»; длинное число растёт влево)
 FISH_TAG = (790, 388, 1000, 418)     # плашка над картинкой («Рекордный улов»)
 
 
@@ -198,7 +198,7 @@ def match_fish(text):
     return best if score >= 0.75 else None
 
 
-def _ocr_box(img, box, lang, k=3.0):
+def _ocr_box(img, box, lang, k=3.0, binar=False):
     """OCR кусочка экрана. Вокруг текста - поля цветом фона: короткое слово без полей
     OCR Windows часто не видит вовсе (как ранги из одной цифры во вкладке PM)."""
     import pm_ocr
@@ -206,6 +206,9 @@ def _ocr_box(img, box, lang, k=3.0):
     a, _, _ = crop(img, box)
     f = k * BASE_H / img.shape[0]
     a = cv2.resize(a, (max(1, int(a.shape[1] * f)), max(1, int(a.shape[0] * f))), interpolation=cv2.INTER_CUBIC)
+    if binar:   # светлый текст -> чёрный на белом (так OCR видит, например, «2.77»)
+        g = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+        a = cv2.cvtColor(np.where(g > 120, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
     m = int(12 * k)
     bg = [int(c) for c in np.median(a.reshape(-1, 3), axis=0)]
     a = cv2.copyMakeBorder(a, m, m, m, m, cv2.BORDER_CONSTANT, value=bg)
@@ -227,12 +230,18 @@ def read_catch(img):
         if name:
             text = t
             break
-    kg = None
-    for k in (3.0, 2.0):
-        m = re.search(r"\d+[.,]\d+", _ocr_box(img, FISH_KG, "en", k))
+    # вес - голосованием по масштабам: на одном масштабе OCR теряет точку или первую цифру
+    # («1.07» -> «107», «07», «1.01»), «2.77» в цвете не видит вовсе (только чёрно-белым);
+    # два одинаковых прочтения - уже верное
+    votes = {}
+    for binar, k in [(False, k) for k in OCR_SCALES] + [(True, k) for k in OCR_SCALES]:
+        m = re.search(r"\d+[.,]\d\d", _ocr_box(img, FISH_KG, "en", k, binar))
         if m:
-            kg = float(m.group(0).replace(",", "."))
-            break
+            v = float(m.group(0).replace(",", "."))
+            votes[v] = votes.get(v, 0) + 1
+            if votes[v] >= 2:
+                break
+    kg = max(votes, key=votes.get) if votes else None
     tag = _letters(_ocr_box(img, FISH_TAG, "ru"))
     return {"name": name, "text": text, "kg": kg, "record": "рекорд" in tag}
 
