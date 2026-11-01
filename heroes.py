@@ -851,8 +851,9 @@ class MineHero(Hero):
         self.card(x0, x1)
         self.label(x0 + 18, 24, "Шахта")
         self.text(x0 + 18, 50, str(d.get("status") or ""), 12, True, T.TEXT if act else T.MUTED)
+        last = d.get("last_ore") or "—"
         cells = [("Руды на камне", str(d.get("left") or 0) if state == "mini" else "—"),
-                 ("Кликов в секунду", f"{float(d.get('cps') or 0):g}"), ("В час", f"{self.rate}"),
+                 ("Последняя руда", last if len(last) <= 18 else last[:17] + "…"), ("В час", f"{self.rate}"),
                  ("Время", fmt_time(self.sec))]
         half = (x1 - x0 - 36) / 2
         for i, (lab, val) in enumerate(cells):

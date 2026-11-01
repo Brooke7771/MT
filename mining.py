@@ -43,6 +43,13 @@ STUCK = 1.2                            # кусков не видно, а мин
 P = dict(dev=46, cs=120, min_area=260, max_area=4000, med=41, er=7, op=7, cl=15, ro=3,
          dark_l90=60, dark_ch=12, dark_min=20, grey=7, gop=13, gl=150)
 P_SENS = dict(P, dev=34)
+NOTE_BOX = (740, 940, 1180, 1075)      # уведомления внизу по центру («Вы собрали Железная руда!»), стопкой вверх
+NOTE_SCALES = (2.0, 1.5, 3.0)          # OCR Windows на одном масштабе строку иногда не видит вовсе
+NOTE_TRIES = (0.2, 0.5, 0.9, 1.5, 2.4)  # когда после закрытия мини-игры читать уведомление (с)
+# руды, что встречались или могут встретиться: прочитанное сверяется с ними (OCR путает «Ж» с «)К»)
+ORES = ["Железная руда", "Золотая руда", "Медная руда", "Серебряная руда", "Угольная руда", "Каменный уголь",
+        "Уголь", "Алмаз", "Изумруд", "Рубин", "Сапфир", "Аметист", "Кварц"]
+UNKNOWN_ORE = "Не прочитано"
 
 
 def app_dir():
@@ -62,7 +69,9 @@ CONFIG_PATH = os.path.join(app_dir(), "mining_config.json")
 
 def default_config():
     return {"toggle_vk": 0x67,            # Numpad 7 (Numpad 9 в игре - навигатор)
-            "cps": 6.0, "mini_cps": 3.0, "dig": True, "ores": True, "focus_only": True}
+            "cps": 6.0, "mini_cps": 3.0, "dig": True, "ores": True, "focus_only": True,
+            "ore_overlay": True,            # карточка «Руда» поверх игры, пока шахта включена
+            "ore_side": "left"}
 
 
 def load_config():
@@ -179,6 +188,113 @@ class Vision:
         return out
 
 
+def _letters(t):
+    return "".join(c for c in t.lower().replace("ё", "е") if c.isalpha() or c == " ").strip()
+
+
+def match_ore(text):
+    """Прочитанное после «собрали» -> название руды (из ORES, если похоже) или очищенный текст, или None."""
+    import difflib
+    t = text.replace(")К", "Ж").replace(")к", "ж")
+    t = " ".join(_letters(t).split())
+    if len(t.replace(" ", "")) < 3:
+        return None
+    best, score = None, 0.0
+    for name in ORES:
+        r = difflib.SequenceMatcher(None, t, _letters(name)).ratio()
+        if r > score:
+            best, score = name, r
+    if score >= 0.75:
+        return best
+    return t[:1].upper() + t[1:] if " " in t else None      # одно слово - строка оборвалась («Золотая»)
+
+
+def read_ore(f):
+    """Кадр 1080p -> руда из самого нижнего (свежего) уведомления «Вы собрали …!» или None."""
+    import pm_ocr
+    from PIL import Image
+    x0, y0, x1, y1 = NOTE_BOX
+    for sc in NOTE_SCALES:
+        a = cv2.resize(f[y0:y1, x0:x1], None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+        ws = pm_ocr.ocr(Image.fromarray(cv2.cvtColor(a, cv2.COLOR_BGR2RGB)), "ru")
+        # строки - в порядке слов OCR (слова строки идут слева направо; по высоте нельзя - строка бывает наклонной)
+        lines = []
+        for w in ws:
+            if lines and w[1] > lines[-1][-1][1]:
+                lines[-1].append(w)
+            else:
+                lines.append([w])
+        for line in sorted(lines, key=lambda l: -sum(w[2] for w in l) / len(l)):     # снизу - свежее
+            words = [w[0] for w in line]
+            k = next((i for i, w in enumerate(words) if _letters(w).startswith("собрал")), None)
+            if k is not None:
+                name = match_ore(" ".join(words[k + 1:]).split("!")[0])
+                if name:
+                    return name
+    return None
+
+
+# ====================================================================== журнал добычи
+LOG_PATH = os.path.join(app_dir(), "mine_log.json")
+LOG = {"rows": None, "ver": 0}          # rows: [[время, руда или "", кусков собрано, секунд на камень]]
+_log_lock = threading.Lock()
+
+
+def log_rows():
+    with _log_lock:
+        if LOG["rows"] is None:
+            try:
+                with open(LOG_PATH, encoding="utf-8") as f:
+                    LOG["rows"] = [r for r in json.load(f) if isinstance(r, list) and len(r) == 4]
+            except Exception:
+                LOG["rows"] = []
+        return list(LOG["rows"])
+
+
+def _log_write(rows):
+    try:
+        with open(LOG_PATH + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        os.replace(LOG_PATH + ".tmp", LOG_PATH)
+    except Exception:
+        pass
+
+
+def log_add(ore, pieces, sec, t=None):
+    log_rows()
+    with _log_lock:
+        LOG["rows"].append([t or time.time(), ore or "", int(pieces), round(float(sec), 1)])
+        LOG["ver"] += 1
+        rows = list(LOG["rows"])
+    _log_write(rows)
+
+
+def log_clear():
+    with _log_lock:
+        LOG["rows"] = []
+        LOG["ver"] += 1
+    try:
+        os.remove(LOG_PATH)
+    except OSError:
+        pass
+
+
+def log_summary(rows, since=0.0):
+    """-> (по рудам [(руда, камней, кусков, среднее время на камень)] по убыванию камней,
+    итог (камней, кусков, среднее время на камень))."""
+    by = {}
+    for t, ore, pcs, sec in rows:
+        if t < since:
+            continue
+        r = by.setdefault(ore or UNKNOWN_ORE, [0, 0, 0.0])
+        r[0] += 1
+        r[1] += pcs
+        r[2] += sec
+    out = sorted(((n, c, p, s / c) for n, (c, p, s) in by.items()), key=lambda r: (-r[1], r[0]))
+    n = sum(r[1] for r in out)
+    return out, (n, sum(r[2] for r in out), (sum(r[1] * r[3] for r in out) / n) if n else 0.0)
+
+
 def analyze_video(path, out=None, step=1):
     """Проверка зрения на записи: фазы и найденные куски по кадрам (out - видео с пометками)."""
     vis = Vision()
@@ -221,7 +337,7 @@ def build_mine_tab(parent):
     cfg = load_config()
     q = queue.Queue()
     ctl = {"active": False, "quit": False, "binding": False, "status": "Выключен"}
-    stats = {"rocks": 0, "ores": 0, "clicks": 0, "state": "idle", "view": None, "left": 0}
+    stats = {"rocks": 0, "ores": 0, "clicks": 0, "state": "idle", "view": None, "left": 0, "last_ore": None}
     pad = {"padx": 6, "pady": 3}
 
     def log(m):
@@ -260,8 +376,17 @@ def build_mine_tab(parent):
         threading.Thread(target=wait, daemon=True).start()
     ttk.Button(parent, text="Назначить", command=bind_key).grid(row=3, column=2, sticky="w", **pad)
 
-    box = ttk.LabelFrame(parent, text="Как работать")
-    box.grid(row=4, column=0, columnspan=4, sticky="ew", **pad)
+    # ниже - вкладки, как у рыбалки: настройки, руда за период, журнал
+    nb = ttk.Notebook(parent)
+    nb.grid(row=4, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
+    parent.columnconfigure(3, weight=1)
+    parent.rowconfigure(4, weight=1)
+    tab_dig, tab_ore, tab_log = (ttk.Frame(nb, padding=(8, 4)) for _ in range(3))
+    for fr_, name in ((tab_dig, "Добыча"), (tab_ore, "Руда"), (tab_log, "Журнал")):
+        nb.add(fr_, text=name)
+        fr_.columnconfigure(3, weight=1)
+    box = ttk.LabelFrame(tab_dig, text="Как работать")
+    box.grid(row=0, column=0, columnspan=4, sticky="ew", **pad)
     ttk.Label(box, text="Бегаешь и жмёшь E у камня сам. Пока идёт добыча (внизу справа «Добыча руды»), бот кликает; "
                         "когда откроется мини-игра с камнем на коврике, бот сам соберёт все куски руды.",
               style="Muted.TLabel", wraplength=720, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", **pad)
@@ -297,8 +422,120 @@ def build_mine_tab(parent):
     cps_var.trace_add("write", lambda *a: save())
     mini_var.trace_add("write", lambda *a: save())
 
-    logbox = tk.Text(parent, height=10, width=80, state="disabled", font=("Consolas", 9))
-    logbox.grid(row=5, column=0, columnspan=4, **pad)
+    logbox = tk.Text(tab_log, height=10, width=80, state="disabled", font=("Consolas", 9))
+    logbox.grid(row=0, column=0, columnspan=4, sticky="ew", **pad)
+
+    # ---------------- руда: что собрано и сколько
+    oref = ttk.LabelFrame(tab_ore, text="Какую руду собрал бот")
+    oref.grid(row=0, column=0, columnspan=4, sticky="nsew", **pad)
+    tab_ore.rowconfigure(0, weight=1)
+    oref.rowconfigure(2, weight=1)
+    oref.columnconfigure(0, weight=1)
+    t_start = time.time()
+    PERIODS = {"За этот запуск": None, "Сегодня": "day", "7 дней": 7, "30 дней": 30, "Всё время": 0}
+    otop = ttk.Frame(oref)
+    otop.grid(row=0, column=0, sticky="ew", **pad)
+    per_var = tk.StringVar(value="За этот запуск")
+    pcb = ttk.Combobox(otop, textvariable=per_var, values=list(PERIODS), state="readonly", width=15)
+    pcb.pack(side="left", padx=(0, 6))
+    pcb.bind("<<ComboboxSelected>>", lambda e: show_ores())
+    ttk.Button(otop, text="Копировать", command=lambda: copy_ores()).pack(side="right", padx=2)
+    ttk.Button(otop, text="Очистить...", command=lambda: clear_ores()).pack(side="right", padx=2)
+    ore_sum = tk.StringVar()
+    ttk.Label(oref, textvariable=ore_sum, style="Status.TLabel").grid(row=1, column=0, sticky="w", **pad)
+    COLS = (("n", "Камней", 70), ("share", "Доля", 70), ("pcs", "Кусков", 70), ("sec", "Время на камень", 120))
+    otv = ttk.Treeview(oref, columns=[c for c, *_ in COLS], height=8, selectmode="browse")
+    otv.heading("#0", text="Руда", anchor="w")
+    otv.column("#0", width=190, anchor="w")
+    for c, title, w in COLS:
+        otv.heading(c, text=title)
+        otv.column(c, width=w, anchor="e", stretch=False)
+    otv.grid(row=2, column=0, sticky="nsew", **pad)
+    ovr = ttk.Frame(oref)
+    ovr.grid(row=3, column=0, sticky="w", **pad)
+    ov_var = tk.BooleanVar(value=cfg["ore_overlay"])
+    SIDES = {"слева": "left", "справа": "right"}
+    side_var = tk.StringVar(value=next((k for k, v in SIDES.items() if v == cfg["ore_side"]), "слева"))
+
+    def ov_changed(e=None):
+        cfg["ore_overlay"] = bool(ov_var.get())
+        cfg["ore_side"] = SIDES[side_var.get()]
+        save_config(cfg)
+    ttk.Checkbutton(ovr, text="Показывать руду поверх игры (пока шахта включена)", variable=ov_var,
+                    command=ov_changed).pack(side="left")
+    scb = ttk.Combobox(ovr, textvariable=side_var, values=list(SIDES), state="readonly", width=8)
+    scb.pack(side="left", padx=8)
+    scb.bind("<<ComboboxSelected>>", ov_changed)
+    ore_state = {"ver": -1, "per": None, "rows": []}
+
+    def ores_since():
+        p = PERIODS[per_var.get()]
+        if p is None:
+            return t_start
+        if p == "day":
+            lt = time.localtime()
+            return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        return time.time() - p * 86400 if p else 0.0
+
+    def show_ores(force=True):
+        key = (LOG["ver"], per_var.get())
+        if not force and key == (ore_state["ver"], ore_state["per"]):
+            return
+        ore_state.update(ver=key[0], per=key[1])
+        rows, (n, pcs, avg) = log_summary(log_rows(), ores_since())
+        ore_state["rows"] = rows
+        otv.delete(*otv.get_children())
+        for name, cnt, p_, sec in rows:
+            otv.insert("", "end", text=name, values=(cnt, f"{100 * cnt / n:.0f}%", p_, f"{sec:.0f} с"))
+        if not n:
+            ore_sum.set("Пока ничего" + (" - руда появится здесь после первого камня" if per_var.get() == "За этот запуск"
+                                         else " за этот период"))
+            return
+        ore_sum.set(f"Камней: {n}  ·  кусков руды: {pcs}  ·  в среднем {avg:.0f} с на камень")
+
+    def copy_ores():
+        lines = [f"Руда ({per_var.get().lower()}): {ore_sum.get()}"]
+        for name, cnt, p_, sec in ore_state["rows"]:
+            lines.append(f"{name}\t{cnt} камн.\t{p_} кусков\t{sec:.0f} с на камень")
+        parent.clipboard_clear()
+        parent.clipboard_append("\n".join(lines))
+        log("Руда скопирована в буфер обмена")
+
+    def clear_ores():
+        from tkinter import messagebox
+        if messagebox.askyesno("Руда", "Стереть весь журнал руды (за всё время)?", parent=parent.winfo_toplevel()):
+            log_clear()
+            show_ores()
+            log("Журнал руды очищен")
+
+    cov = {"w": None, "focus_t": 0.0, "in_game": False}
+
+    def ore_overlay_tick():
+        """Карточка «Руда» поверх игры: только пока шахта включена и игра на переднем плане."""
+        try:
+            now = time.time()
+            if now - cov["focus_t"] > 0.6:
+                cov["focus_t"] = now
+                t_ = AF.foreground_title().lower()
+                cov["in_game"] = any(g in t_ for g in ("gta", "rage", "majestic", "grand theft"))
+            if cfg["ore_overlay"] and ctl["active"] and cov["in_game"]:
+                if cov["w"] is None:
+                    import fishing_debug as FD
+                    cov["w"] = FD.OreOverlay(parent.winfo_toplevel())
+                rows_all = [r for r in log_rows() if r[0] >= t_start]
+                rows, tot = log_summary(rows_all, t_start)
+                last = rows_all[-1] if rows_all else None
+                flash = max(0.0, 1 - (now - last[0]) / 8.0) if last else 0.0
+                cov["w"].draw(rows, tot, (last[1] or UNKNOWN_ORE) if last and flash > 0 else None,
+                              cfg["ore_side"], flash)
+            elif cov["w"] is not None:
+                cov["w"].hide()
+        except tk.TclError:
+            return
+        except Exception:
+            pass
+        if not ctl["quit"]:
+            parent.after(250, ore_overlay_tick)
 
     # ---------------- рабочий поток
     def worker():
@@ -349,6 +586,8 @@ def build_mine_tab(parent):
         tries = []                  # [(x, y, кликов)] - куски в этой мини-игре, по которым уже кликали
         skip = []                   # пропущенные (не пропали)
         mini_t0, mini_n0, last_mini, last_seen, sens = 0.0, 0, 0.0, 0.0, False
+        dig_t0 = None               # начало добычи этого камня
+        pending = None              # камень готов, руду ещё читаем: {"t", "pieces", "sec", "tries"}
         while not ctl["quit"]:
             if not switches.is_on("mine"):
                 ctl["active"] = False
@@ -363,6 +602,10 @@ def build_mine_tab(parent):
                 log("Шахта включена: жми E у камня" if was else "Шахта выключена")
             if not ctl["active"]:
                 BUSY["on"] = False
+                dig_t0 = None
+                if pending:                               # выключили сразу после камня - пишем без руды
+                    log_add(None, pending["pieces"], pending["sec"], t=pending["t"])
+                    pending = None
                 ctl["status"] = "Выключен" if switches.is_on("mine") else "Выключен (тумблер)"
                 stats["view"] = None
                 time.sleep(0.1)
@@ -384,8 +627,21 @@ def build_mine_tab(parent):
                 log(f"Ошибка: {ex}")
                 time.sleep(1)
                 continue
+            if pending and now >= pending["t"] + pending["tries"][0]:
+                pending["tries"].pop(0)
+                try:
+                    ore = read_ore(f)
+                except Exception:
+                    ore = None
+                if ore or not pending["tries"]:
+                    log_add(ore, pending["pieces"], pending["sec"], t=pending["t"])
+                    stats["last_ore"] = ore or UNKNOWN_ORE
+                    log(f"Камень готов: {ore or 'руда не прочитана'}, кусков {pending['pieces']}, {pending['sec']:.0f} с")
+                    pending = None
             if ph != phase_prev:
                 if ph == "dig":
+                    if dig_t0 is None:
+                        dig_t0 = now
                     log("Добыча: кликаю")
                 elif ph == "mini":
                     tries, skip, sens = [], [], False
@@ -397,7 +653,9 @@ def build_mine_tab(parent):
                     stats["rocks"] += 1
                     stats["ores"] += 1                    # последний кусок пропадает вместе с мини-игрой
                     mini_n0 += 1
-                    log(f"Камень готов: кусков собрано {mini_n0} за {last_mini - mini_t0:.1f} с")
+                    pending = {"t": now, "pieces": mini_n0, "sec": last_mini - (dig_t0 or mini_t0),
+                               "tries": list(NOTE_TRIES)}
+                    dig_t0 = None
                 phase_prev = ph
             if ph == "dig":
                 BUSY["on"] = True
@@ -498,16 +756,20 @@ def build_mine_tab(parent):
             return
         status_var.set(ctl["status"])
         info_var.set(f"Камней: {stats['rocks']}   ·   кусков руды: {stats['ores']}   ·   кликов: {stats['clicks']}")
+        show_ores(False)
         if not ctl["quit"]:
             parent.after(200, pump)
 
     def provider():
         return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Камней", "view": stats["view"],
-                "state": stats["state"], "cps": cfg["cps"], "left": stats["left"],
+                "state": stats["state"], "cps": cfg["cps"], "left": stats["left"], "last_ore": stats["last_ore"],
                 "items": [("Камней", stats["rocks"]), ("Руды", stats["ores"])]}
     widgets.register("mine", provider)
     parent.after(200, pump)
+    parent.after(1000, ore_overlay_tick)
 
     def stop():
         ctl["quit"] = True
+        if cov["w"] is not None:
+            cov["w"].destroy()
     return stop

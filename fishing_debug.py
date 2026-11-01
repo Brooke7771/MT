@@ -341,3 +341,54 @@ class CatchOverlay:
             self.win.destroy()
         except Exception:
             pass
+
+
+class OreOverlay(CatchOverlay):
+    """Карточка «Руда за запуск» поверх игры (шахта): камней всего, руды по видам, только что собранная."""
+
+    ACC = "#5aa9ff"
+
+    def draw(self, rows, total, last, side="left", flash=0.0):
+        """rows - [(руда, камней, кусков, среднее время)], total - (камней, кусков, среднее время),
+        last - название свежей руды или None, flash - 1..0, пока она подсвечена."""
+        from widgets import _rrect, mix
+        n_show = min(len(rows), self.ROWS)
+        h = 52 + max(1, n_show) * 20 + (16 if len(rows) > n_show else 0) + 18 + (28 if last else 0)
+        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        x = 20 if side == "left" else sw - self.W - 20
+        y = int(sh * 0.46) if side == "left" else int(sh * 0.30)
+        self.win.geometry(f"{self.W}x{h}+{x}+{y}")
+        cv = self.cv
+        cv.configure(height=h)
+        cv.delete("all")
+        W = self.W
+        _rrect(cv, 0, 0, W - 1, h - 1, 14, fill=self.CARD, outline=mix(self.OK, self.EDGE, 1 - flash))
+        _rrect(cv, 0, 14, 4, h - 14, 2, fill=self.ACC, outline="")
+        self._t(16, 18, "⛏", 11, False, self.ACC)
+        self._t(36, 18, "Руда за запуск", 10, True)
+        n, pcs, avg = total
+        self._t(W - 14, 18, f"{n} камн.", 10, True, mix(self.OK, self.TEXT, 1 - flash), "e")
+        cv.create_line(14, 36, W - 14, 36, fill=self.EDGE)
+        y = 50
+        if not rows:
+            self._t(16, y, "пока пусто - руда появится здесь", 9, False, self.MUTED)
+            y += 20
+        for name, cnt, _p, _s in rows[:n_show]:
+            nm = name if len(name) <= 26 else name[:25] + "…"
+            self._t(16, y, nm, 9)
+            self._t(W - 14, y, f"×{cnt}", 9, True, self.TEXT, "e")
+            y += 20
+        if len(rows) > n_show:
+            self._t(16, y - 4, f"и ещё {len(rows) - n_show}", 8, False, self.MUTED)
+            y += 16
+        self._t(16, y - 2, f"кусков руды {pcs}" + (f"  ·  {avg:.0f} с на камень" if n else ""), 8, False, self.MUTED)
+        y += 18
+        if last:
+            col = mix(self.OK, self.TEXT, 0.15 * (1 - flash))
+            txt = "+ " + last
+            _rrect(cv, 10, y - 8, W - 10, y + 14, 8, fill=mix(col, self.CARD, 0.85 - 0.25 * flash), outline="")
+            self._t(18, y + 3, txt if len(txt) <= 38 else txt[:37] + "…", 9, True, col)
+        if not self.shown:
+            self.win.deiconify()
+            self.shown = True
+        self.win.attributes("-topmost", True)
