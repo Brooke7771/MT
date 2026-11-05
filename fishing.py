@@ -618,6 +618,25 @@ class Tracker:
     TAU = 0.15             # с: сглаживание скорости
     VTH = 5.0              # px/с на 1080p: порог уверенной скорости
     CONFIRM = 0.1          # с: сколько новая сторона должна держаться для смены
+    # Запись 20261105_033528 (море ночью, тяжёлая рыба, бои 76-150 с): вода и небо почти чёрные,
+    # сдвиг фона шумит (±50-100 px/с туда-сюда каждую секунду), бот менял клавишу 25-50 раз в минуту,
+    # трофей не вытянул. А облако брызг на тёмной воде чёткое и тянется ЗА рыбой: брызги слева от
+    # плашки - рыба плывёт вправо. С руками игрока совпало 97% (фон - 73%), опережает его на ~0,4 с;
+    # где клавиша бота шла против брызг - прогресс +1,6 px/с, по брызгам +3,7. Смен клавиши 41 -> 12 в мин.
+    USE_SPLASH = True
+    SP_BOX = (220, 70, 50)  # px (1080p): облако ищем по x ±220, по y от -70 до +50 от плашки
+    SP_MIN = 50             # точек брызг (1080p) - меньше: облака нет
+    SP_FULL = 400           # столько точек и больше - облако полновесное
+    SP_TAU = 0.3            # с: сглаживание перевеса стороны
+    SP_TH = 0.15            # |перевес| выше - решаем по брызгам, иначе по фону
+    SP_KEEP = 0.5           # с: сколько верим брызгам после того, как облако пропало
+    # Брызгам верим, только когда на фоне не за что зацепиться: средний |перепад по x| уменьшенного фона
+    # (сглаж. 1 с) ниже TEX_ON (море ночью - медиана 1,1, p90 1,9), обратно на фон - выше TEX_OFF.
+    # На прочих записях (река ночью/днём, берег) - 3,9-8,6 (p10 >= 2,0): там фон надёжный, а брызги
+    # ошибались (20261029_223845: где бот шёл против брызг, прогресс +9,3 px/с, по брызгам +7,5).
+    TEX_TAU = 1.0
+    TEX_ON = 1.4
+    TEX_OFF = 2.0
 
     def __init__(self):
         self.plate = PlateTracker()
@@ -635,6 +654,58 @@ class Tracker:
         self.last_seen = -1e9
         self.source = "-"
         self.dbg = {}
+        self.mk = None             # плашка (x, y, size) для брызг
+        self.mk_t = -1e9
+        self.mk_full = -1e9        # когда последний раз искали плашку по всей зоне
+        self.sp = 0.0              # сглаженный перевес брызг: + слева (рыба вправо), - справа
+        self.sp_t = -1e9           # когда последний раз видели облако
+        self.sp_n = 0
+        self.tex = None            # сглаженная «детальность» фона
+        self.blind = False         # фон без деталей - направление по брызгам
+
+    def _splash(self, screen, zone, now, k):
+        """Плашка (рядом с прошлым местом; по всей зоне - не чаще раза в 0,3 с) и брызги вокруг неё.
+        -> перевес стороны от -1 (всё справа) до +1 (всё слева) или None (нет плашки/облака)."""
+        H, W = screen.shape[:2]
+        x0, y0, x1, y1 = zone
+        m = None
+        if self.mk is not None:
+            r = max(90 * k, self.mk[2] * 5)
+            ax0, ay0 = int(max(x0, self.mk[0] - r)), int(max(y0, self.mk[1] - r))
+            ax1, ay1 = int(min(x1, self.mk[0] + r)), int(min(y1, self.mk[1] + r))
+            if ax1 - ax0 > 20 and ay1 - ay0 > 20:
+                f = find_marker(screen[ay0:ay1, ax0:ax1], near=(self.mk[0] - ax0, self.mk[1] - ay0, r))
+                if f is not None:
+                    m = (ax0 + f[0], ay0 + f[1], f[2])
+        if m is None and now - self.mk_full > 0.3:
+            self.mk_full = now
+            f = find_marker(screen[y0:y1, x0:x1], cx=(W / 2 - x0, 300 * k))
+            if f is not None:
+                m = (x0 + f[0], y0 + f[1], f[2])
+        if m is None:
+            if self.mk is not None and now - self.mk_t > 1.0:
+                self.mk = None
+            return None
+        self.mk, self.mk_t = m, now
+        x, y, s = m
+        bx, up, dn = (v * k for v in self.SP_BOX)
+        wx0, wx1 = int(max(0, x - bx)), int(min(W, x + bx))
+        wy0, wy1 = int(max(0, y - up)), int(min(H, y + dn))
+        win = screen[wy0:wy1, wx0:wx1, :3]
+        if win.size == 0:
+            return None
+        g = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
+        spread = win.max(axis=2).astype(np.int16) - win.min(axis=2)
+        br = (g > 120) & (spread < 70)
+        cx, cy, h = int(x - wx0), int(y - wy0), int(s * 0.9)
+        br[max(0, cy - h):cy + h, max(0, cx - h):cx + h] = False      # сама плашка
+        cols = br.sum(axis=0)
+        left, right = float(cols[:cx].sum()), float(cols[cx + 1:].sum())
+        tot = left + right
+        self.sp_n = int(tot)
+        if tot < self.SP_MIN * k * k:
+            return None
+        return (left - right) / tot * min(1.0, tot / (self.SP_FULL * k * k))
 
     @staticmethod
     def _prep(gray, plate, W):
@@ -680,9 +751,32 @@ class Tracker:
             a = 1.0 - np.exp(-dt / self.TAU)
             self.v = (1 - a) * self.v + a * step_v
             self.last_seen = now
+        if self.USE_SPLASH:
+            tex = float(np.mean(np.abs(cv2.Sobel(small, cv2.CV_32F, 1, 0))))
+            if self.tex is None or not dt or dt <= 0 or dt >= 0.5:
+                self.tex = tex if self.tex is None else self.tex
+            else:
+                a = 1.0 - np.exp(-dt / self.TEX_TAU)
+                self.tex = (1 - a) * self.tex + a * tex
+            if self.tex < self.TEX_ON:
+                self.blind = True
+            elif self.tex > self.TEX_OFF:
+                self.blind = False
+        noisy = self.blind
+        if self.USE_SPLASH and noisy:          # брызги ищем, только когда фону нельзя верить (~10 мс)
+            e = self._splash(screen, zone, now, k)
+            if e is not None and dt and 0 < dt < 0.5:
+                a = 1.0 - np.exp(-dt / self.SP_TAU)
+                self.sp = (1 - a) * self.sp + a * e
+                self.sp_t = now
         vth = self.VTH * k
-        if abs(self.v) > vth:
+        by_sp = self.USE_SPLASH and noisy and now - self.sp_t < self.SP_KEEP and abs(self.sp) > self.SP_TH
+        d = 0
+        if by_sp:
+            d = 1 if self.sp > 0 else -1
+        elif abs(self.v) > vth:
             d = 1 if self.v > 0 else -1
+        if d:
             if not self.last_dir:
                 self.last_dir = d
             elif d != self.last_dir:
@@ -693,9 +787,9 @@ class Tracker:
                     self.pending = 0
             else:
                 self.pending = 0
-        self.source = "иконка+фон" if plate is not None and plate[3] else "фон"
-        self.dbg = {"marker": None if plate is None else plate[:3], "splash": None, "cloud": None,
-                    "bg": self.v, "bg_conf": abs(self.v) / vth, "sp": 0.0, "sp_n": 0}
+        self.source = "брызги" if by_sp else ("иконка+фон" if plate is not None and plate[3] else "фон")
+        self.dbg = {"marker": self.mk if plate is None else plate[:3], "splash": None, "cloud": None,
+                    "bg": self.v, "bg_conf": abs(self.v) / vth, "sp": self.sp, "sp_n": self.sp_n}
         return self.last_dir or None
 
 
@@ -865,6 +959,8 @@ class Fisher:
         held = self.held
         if not held or self.fb_off is not None or now - self.key_t < self.FALL_WIN or not self.prog:
             return want
+        if tr.source == "брызги":
+            return want                               # облако брызг видно - трекер не слепой
         vth = tr.VTH * k
         if not self.vh or np.median([v for t, v in self.vh if t >= now - self.FALL_WIN]) > self.FB_BLIND * vth:
             return want
