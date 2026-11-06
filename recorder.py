@@ -293,7 +293,7 @@ class Session:
 CONFIG_PATH = os.path.join(data_dir(), "recorder_config.json")
 
 
-ALLOWED = {"fn": lambda: True}       # главное окно подставляет «есть мастер-ключ»: без него страницы нет и клавиши молчат
+ALLOWED = {"fn": lambda: True}       # главное окно подставляет «доступ rec или мастер-ключ»: без него страницы нет и клавиши молчат
 
 
 def rec_on():
@@ -535,6 +535,8 @@ def build_rec_tab(parent):
                 if m and not prev["m"]:
                     q.put(("mark",))
                 prev["s"], prev["m"] = s, m
+            elif st["sess"] and not ALLOWED["fn"]():
+                q.put(("off",))                      # доступ к записи забрали на ходу - сохраняем и стоп
             time.sleep(0.03)
     threading.Thread(target=hotkeys, daemon=True).start()
     switches.listen(lambda k, v: q.put(("off",)) if k == "rec" and not v else None)
@@ -546,7 +548,7 @@ def build_rec_tab(parent):
                 if m[0] == "toggle":
                     toggle()
                 elif m[0] == "off" and st["sess"]:
-                    stop("выключена в меню")
+                    stop("выключена в меню" if not switches.is_on("rec") else "нет доступа к записи")
                 elif m[0] == "mark" and st["sess"]:
                     n = st["sess"].mark()
                     status_var.set(f"● Метка {n} · {st['sess'].elapsed():.1f} с")

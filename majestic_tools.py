@@ -190,8 +190,9 @@ def main():
         out = [HOME] + [p for p in PAGES if p[0] in acc and p[0] not in ("rec", "test")]
         if "test" in acc or L.has_master():        # «Тест»: по ключу (доступ test) или владельцу
             out.append(next(p for p in PAGES if p[0] == "test"))
-        if L.has_master():                         # инструменты владельца: запись и админка
+        if "rec" in acc or L.has_master():         # «Запись»: по ключу (доступ rec) или владельцу
             out.append(next(p for p in PAGES if p[0] == "rec"))
+        if L.has_master():                         # админка - только владельцу
             out.append(ADMIN)
         return out
 
@@ -350,7 +351,7 @@ def main():
     def sync_tabs():
         """Приводит разделы в соответствие с ключом: открыл ключ - собрал, нет ключа - снёс."""
         def allowed(k):
-            return k in access["set"] or (k == "test" and L.has_master())
+            return k in access["set"] or (k in ("test", "rec") and L.has_master())
         for key in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test"):
             if allowed(key) and key not in built:
                 for w in list(pages[key].winfo_children()):
@@ -366,7 +367,7 @@ def main():
                 teardown(key)
         if L.wipe_pending() and not built:
             L.wipe_bot_files()
-        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test") and not allowed(state["page"]):
+        if state.get("page") in ("bot", "afk", "fish", "wood", "mine", "gym", "farm", "build", "test", "rec")                 and not allowed(state["page"]):
             select("home")
 
     sync_tabs()
@@ -397,7 +398,7 @@ def main():
         failed(pages["pm"], "PM", ex)
     try:
         import recorder
-        recorder.ALLOWED["fn"] = L.has_master
+        recorder.ALLOWED["fn"] = lambda: "rec" in access["set"] or L.has_master()   # без доступа клавиши молчат
         stops.append(recorder.build_rec_tab(pages["rec"]))
     except Exception as ex:
         failed(pages["rec"], "Запись", ex)
