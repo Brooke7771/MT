@@ -252,7 +252,7 @@ class CatchOverlay:
     KEY = "#010203"
     W = 286
     CARD, EDGE, TEXT, MUTED = "#13131a", "#262630", "#ececf2", "#8a8a96"
-    ACC, OK = "#38c6e0", "#46d36b"
+    ACC, OK, XP = "#38c6e0", "#46d36b", "#f2c84b"
     ROWS = 5                        # сколько рыб показывать, остальные - «и ещё N»
 
     def __init__(self, root):
@@ -289,13 +289,13 @@ class CatchOverlay:
         self.cv.create_text(x, y, text=s, anchor=anchor, fill=fill or self.TEXT,
                             font=("Segoe UI", size, "bold" if bold else "normal"))
 
-    def draw(self, rows, total, last, side="left", flash=0.0):
+    def draw(self, rows, total, last, side="left", flash=0.0, xp=None):
         """rows - [(рыба, штук, кг, самая крупная, без веса)], total - (штук, кг), last - (рыба, кг, act) или None,
-        flash - 1..0, пока свежий улов подсвечен."""
+        flash - 1..0, пока свежий улов подсвечен, xp - (уровень, опыт, нужно, опыта за запуск, за прошлую рыбу) или None."""
         from widgets import _rrect, mix
         fmt = lambda kg: f"{kg:.2f}".replace(".", ",") + " кг"
         n_show = min(len(rows), self.ROWS)
-        h = 52 + max(1, n_show) * 20 + (16 if len(rows) > n_show else 0) + (28 if last else 0)
+        h = 52 + max(1, n_show) * 20 + (16 if len(rows) > n_show else 0) + (28 if last else 0) + (34 if xp else 0)
         sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
         x = 20 if side == "left" else sw - self.W - 20
         y = int(sh * 0.46) if side == "left" else int(sh * 0.30)
@@ -312,6 +312,15 @@ class CatchOverlay:
         self._t(W - 14, 18, f"{n} шт · {fmt(kg)}", 10, True, mix(self.OK, self.TEXT, 1 - flash), "e")
         cv.create_line(14, 36, W - 14, 36, fill=self.EDGE)
         y = 50
+        if xp:
+            lvl, have, need, gain, lastg = xp
+            self._t(16, y, (f"{lvl} ур.  " if lvl else "") + f"{have}/{need} опыта", 9, True, self.XP)
+            self._t(W - 14, y, f"+{gain} за запуск" + (f" · +{lastg}" if lastg is not None else ""), 9, False, self.MUTED, "e")
+            _rrect(cv, 16, y + 11, W - 16, y + 16, 2, fill=self.EDGE, outline="")
+            if need:
+                _rrect(cv, 16, y + 11, 16 + max(5, (W - 32) * min(1.0, have / need)), y + 16, 2, fill=self.XP, outline="")
+            cv.create_line(14, y + 24, W - 14, y + 24, fill=self.EDGE)
+            y += 34
         if not rows:
             self._t(16, y, "пока пусто - рыба появится здесь", 9, False, self.MUTED)
             y += 20

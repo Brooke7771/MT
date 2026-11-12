@@ -14,6 +14,7 @@ import sys
 import json
 import time
 import queue
+import math
 import random
 import threading
 
@@ -243,7 +244,54 @@ def read_catch(img):
                 break
     kg = max(votes, key=votes.get) if votes else None
     tag = _letters(_ocr_box(img, FISH_TAG, "ru"))
-    return {"name": name, "text": text, "kg": kg, "record": "рекорд" in tag}
+    out = {"name": name, "text": text, "kg": kg, "record": "рекорд" in tag}
+    try:
+        out.update(read_xp(img))
+    except Exception:
+        pass
+    return out
+
+
+# Опыт рыбалки в окне улова (запись 20261105_062548): под карточкой рыбы строка
+# «6 уровень   3236/ 4420 (монета EX)   7 уровень» и красная полоска; на кнопке «Отпустить +1 EX»,
+# у плашки над рыбой («Хороший улов») тоже «+1 EX». Порядок слов OCR путает («/ 4420 3236»),
+# поэтому из двух чисел меньшее - сколько есть, большее - сколько нужно до следующего уровня.
+XP_NUM = (900, 634, 1000, 662)       # «3236/ 4420» (по центру, растёт в обе стороны)
+XP_LVL = (772, 632, 880, 664)        # «6 уровень» слева
+XP_REL = (990, 710, 1110, 744)       # кнопка «Отпустить +1»
+XP_TAG = (790, 385, 1010, 420)       # плашка «Хороший улов +1»
+
+
+def read_xp(img):
+    """Окно улова -> {"lvl": уровень, "xp": сколько есть, "xp_max": сколько нужно, "rel_xp": +N за
+    «Отпустить», "tag_xp": +N за плашку} (чего не прочитал - нет в словаре)."""
+    import re
+    nums = lambda s: [int(x) for x in re.findall(r"\d+", s)]
+    out, votes = {}, {}
+    for binar, k in [(True, 3.0), (True, 4.0), (False, 3.0), (True, 2.0), (False, 4.0), (False, 2.0)]:
+        n = nums(_ocr_box(img, XP_NUM, "en", k, binar))
+        if len(n) == 2 and min(n) < max(n):
+            v = (min(n), max(n))
+            votes[v] = votes.get(v, 0) + 1
+            if votes[v] >= 2:
+                break
+    if votes:
+        v = max(votes, key=votes.get)
+        if votes[v] >= 2 or len(votes) == 1:
+            out["xp"], out["xp_max"] = v
+    for k in (3.0, 4.0, 2.0):
+        t = _ocr_box(img, XP_LVL, "ru", k).split()
+        if len(t) >= 2 and "уров" in t[1].lower():
+            d = nums(t[0].translate(str.maketrans("бОоЗзlI", "6003311")))     # OCR путает «6» с «б» и т.п.
+            if d:
+                out["lvl"] = d[0]
+                break
+    for key, box, lang in (("rel_xp", XP_REL, "ru"), ("tag_xp", XP_TAG, "en")):
+        m = re.search(r"\+\s*(\d+)", _ocr_box(img, box, lang, 3.0))
+        if m:   # монету «EX» сразу за числом OCR иногда читает как «0»: «+10» вместо «+1»
+            g = m.group(1)
+            out[key] = int(g[:-1]) if len(g) > 1 and g.endswith("0") else int(g)
+    return out
 
 
 def catch_action(cfg, info):
@@ -302,16 +350,20 @@ def catch_rows():
         if CATCH["rows"] is None:
             try:
                 with open(CATCH_PATH, encoding="utf-8") as f:
-                    CATCH["rows"] = [r for r in json.load(f) if isinstance(r, list) and len(r) == 4]
+                    CATCH["rows"] = [r for r in json.load(f) if isinstance(r, list) and 4 <= len(r) <= 5]
             except Exception:
                 CATCH["rows"] = []
         return list(CATCH["rows"])
 
 
-def catch_add(name, kg, act, t=None):
+def catch_add(name, kg, act, t=None, xp=None):
+    """xp - {"lvl", "xp", "xp_max"} из окна улова (что видно ДО нажатия кнопки) или None."""
     catch_rows()
     with _catch_lock:
-        CATCH["rows"].append([t or time.time(), name or "", kg, act])
+        row = [t or time.time(), name or "", kg, act]
+        if xp and "xp" in xp:
+            row.append({k: xp[k] for k in ("lvl", "xp", "xp_max", "rel_xp", "tag_xp") if k in xp})
+        CATCH["rows"].append(row)
         CATCH["ver"] += 1
         rows = list(CATCH["rows"])
     try:
@@ -335,7 +387,7 @@ def catch_clear():
 def catch_summary(rows, since=0.0, act="keep"):
     """-> (по рыбам [(название, штук, кг всего, самая крупная, штук без веса)] по убыванию кг, итог)."""
     by = {}
-    for t, name, kg, a in rows:
+    for t, name, kg, a, *_ in rows:
         if t < since or (act != "all" and a != act):
             continue
         r = by.setdefault(name or UNKNOWN_FISH, [0, 0.0, 0.0, 0])
@@ -348,6 +400,100 @@ def catch_summary(rows, since=0.0, act="keep"):
     out = sorted(((n, *v) for n, v in by.items()), key=lambda r: (-r[2], -r[1], r[0]))
     tot = (sum(r[1] for r in out), sum(r[2] for r in out), max([r[3] for r in out] or [0.0]), sum(r[4] for r in out))
     return out, tot
+
+
+# ================================================================ опыт рыбалки (по окнам улова)
+# В окне улова видно, сколько опыта ДО этой рыбы. Опыт за рыбу = разница со следующим окном
+# (вместе с «+1» за «Отпустить» и за плашку). Запись 20261105_062548 (6 уровень, всё отпускал):
+# обычно +3, с плашкой «Рекордный улов» бывает +4..+7.
+XP_GAP = 15 * 60          # с: окна улова дальше друг от друга - уже другая рыбалка (не считаем рыбу и время)
+XP_MAX_GAIN = 200         # больше за одну рыбу не бывает - значит, прочитал неверно
+XP_EST = 60               # по скольким последним рыбам считать прогноз «сколько рыб/часов до уровня»
+
+
+def _xp_rows(rows):
+    """Строки журнала с опытом, уровень дописан там, где OCR его не прочитал (тот же «нужно до уровня»)."""
+    out, lvl = [], None
+    for r in rows:
+        if len(r) < 5 or not isinstance(r[4], dict) or "xp" not in r[4]:
+            out.append((r, None))
+            continue
+        x = dict(r[4])
+        if x.get("lvl") is None and out and out[-1][1] and out[-1][1].get("xp_max") == x.get("xp_max"):
+            x["lvl"] = out[-1][1].get("lvl")
+        out.append((r, x))
+    return out
+
+
+def xp_gains(rows):
+    """-> [(время, рыба, keep/release, опыт за эту рыбу, был ли новый уровень)] - по соседним окнам улова."""
+    xr = _xp_rows(rows)
+    out = []
+    for (r, a), (r2, b) in zip(xr, xr[1:]):
+        if not a or not b or r2[0] - r[0] > XP_GAP:
+            continue
+        up = False
+        if b["xp_max"] == a["xp_max"] and (a.get("lvl") is None or b.get("lvl") in (None, a.get("lvl"))):
+            g = b["xp"] - a["xp"]
+        elif b["xp_max"] > a["xp_max"] or (a.get("lvl") and b.get("lvl") == a["lvl"] + 1):
+            g, up = a["xp_max"] - a["xp"] + b["xp"], True
+        else:
+            continue
+        if 0 <= g <= XP_MAX_GAIN:
+            out.append((r[0], r[1], r[3], g, up))
+    return out
+
+
+def xp_summary(rows, since=0.0):
+    """Опыт за период -> словарь: уровень сейчас, сколько есть/нужно, осталось, опыт за период,
+    за рыбу (последняя/средняя/мин/макс), отдельно за отпущенную и оставленную, в час, рыб и времени
+    до следующего уровня, новых уровней. None - опыт ещё ни разу не прочитан."""
+    xr = [x for _, x in _xp_rows(rows) if x]
+    if not xr:
+        return None
+    cur = xr[-1]
+    t_cur = next(r[0] for r, x in reversed(_xp_rows(rows)) if x)
+    g = [x for x in xp_gains(rows) if x[0] >= since]
+    # время рыбалки за период: промежутки между соседними уловами не длиннее XP_GAP
+    ts = [r[0] for r in rows if r[0] >= since]
+    busy = sum(b - a for a, b in zip(ts, ts[1:]) if b - a <= XP_GAP)
+    vals = [x[3] for x in g]
+    s = {"lvl": cur.get("lvl"), "xp": cur["xp"], "xp_max": cur["xp_max"], "left": max(0, cur["xp_max"] - cur["xp"]),
+         "t": t_cur, "gain": sum(vals), "n": len(vals), "ups": sum(1 for x in g if x[4]), "busy": busy,
+         "last": g[-1][3] if g else None, "last_name": g[-1][1] if g else "",
+         "avg": sum(vals) / len(vals) if vals else None, "min": min(vals) if vals else None,
+         "max": max(vals) if vals else None}
+    for act in ("keep", "release"):
+        v = [x[3] for x in g if x[2] == act]
+        s["avg_" + act] = sum(v) / len(v) if v else None
+        s["n_" + act] = len(v)
+    s["per_hour"] = s["gain"] / (busy / 3600) if busy >= 300 and s["gain"] else None
+    # прогноз до уровня - по последним XP_EST рыбам (за любой период): в начале запуска своих ещё нет
+    ga = xp_gains(rows)[-XP_EST:]
+    avg = sum(x[3] for x in ga) / len(ga) if ga else None
+    t_est = sum(b[0] - a[0] for a, b in zip(ga, ga[1:]) if b[0] - a[0] <= XP_GAP)
+    ph = sum(x[3] for x in ga[1:]) / (t_est / 3600) if t_est >= 300 else None
+    s["fish_left"] = s["left"] / avg if avg else None
+    s["time_left"] = s["left"] / ph * 3600 if ph else None
+    return s
+
+
+def fmt_dur(sec):
+    sec = int(sec)
+    if sec >= 86400:
+        return f"{sec // 86400} д {sec % 86400 // 3600} ч"
+    if sec >= 3600:
+        return f"{sec // 3600} ч {sec % 3600 // 60} мин"
+    return f"{max(1, sec // 60)} мин"
+
+
+def fmt_n(v, nd=1):
+    """Число по-русски: 1,5 / 12 / 3 400."""
+    if v is None:
+        return "-"
+    if abs(v - round(v)) < 1e-9 or abs(v) >= 100:
+        return f"{round(v):,}".replace(",", " ")
+    return f"{v:.{nd}f}".replace(".", ",")
 
 
 def fmt_kg(kg):
@@ -1012,13 +1158,18 @@ class Fisher:
                 self.stats["kept" if act == "keep" else "released"] += 1
                 if act == "keep" and info["kg"]:
                     self.stats["kg"] += info["kg"]
-                catch_add(info["name"], info["kg"], act)
+                catch_add(info["name"], info["kg"], act, xp=info)
                 what = "рыба" if info["name"] is None else info["name"]
                 if info["name"]:
                     self.stats["fish"][what] = self.stats["fish"].get(what, 0) + 1
                 kg = f" {info['kg']:.2f} кг" if info["kg"] else ""
+                xp = ""
+                if "xp" in info:
+                    g = xp_gains(catch_rows()[-2:])
+                    xp = (f"  ·  опыт {info['xp']}/{info['xp_max']}" + (f", {info['lvl']} ур." if info.get("lvl") else "") +
+                          (f" (прошлая рыба +{g[-1][3]})" if g else ""))
                 self.log(f"Улов: {what}{kg} - " + ("забрал себе" if act == "keep" else "отпустил (+опыт)") +
-                         (f" ({why})" if why else ""))
+                         (f" ({why})" if why else "") + xp)
                 self.sleep(0.4)
             return
 
@@ -1334,6 +1485,67 @@ def build_fishing_tab(parent):
     ctv.grid(row=2, column=0, sticky="nsew", **pad)
     cat_state = {"ver": -1, "per": None, "what": None, "rows": []}
 
+    # ---------------------------------------------------------------- опыт рыбалки (из окна улова)
+    xpf = ttk.LabelFrame(tab_cat, text="Опыт рыбалки")
+    xpf.grid(row=1, column=0, columnspan=4, sticky="ew", **pad)
+    xpf.columnconfigure(0, weight=1)
+    xp_head, xp_left, xp_per, xp_act = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
+    ttk.Label(xpf, textvariable=xp_head, style="Status.TLabel").grid(row=0, column=0, sticky="w", **pad)
+    xp_bar = ttk.Progressbar(xpf, orient="horizontal", mode="determinate", maximum=1, value=0)
+    xp_bar.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 4))
+    for i, v in enumerate((xp_left, xp_per, xp_act), 2):
+        ttk.Label(xpf, textvariable=v, wraplength=680, justify="left",
+                  style="TLabel" if i < 4 else "Muted.TLabel").grid(row=i, column=0, sticky="w", padx=6, pady=1)
+    xp_cache = {}
+
+    def xp_now(since):
+        """xp_summary с запоминанием (карточка поверх игры спрашивает 4 раза в секунду)."""
+        key = (CATCH["ver"], round(since))
+        if key not in xp_cache:
+            if len(xp_cache) > 8:
+                xp_cache.clear()
+            xp_cache[key] = xp_summary(catch_rows(), since)
+        return xp_cache[key]
+
+    def xp_text(s):
+        """Строки блока «Опыт рыбалки» -> (заголовок, до уровня, за период, отпустил/забрал)."""
+        if s is None:
+            return ("Опыт пока не прочитан",
+                    "Он появится после первого улова: бот читает уровень и опыт в окне «Вы поймали рыбу».", "", "")
+        lvl = f"{s['lvl']} уровень" if s.get("lvl") else "Уровень"
+        pct = 100 * s["xp"] / s["xp_max"] if s["xp_max"] else 0
+        head = f"{lvl}  ·  {fmt_n(s['xp'])} / {fmt_n(s['xp_max'])} опыта  ({pct:.0f}%)"
+        nxt = f"{s['lvl'] + 1} уровня" if s.get("lvl") else "следующего уровня"
+        left = f"До {nxt}: {fmt_n(s['left'])} опыта"
+        if s["fish_left"]:
+            left += f"  ≈ {fmt_n(math.ceil(s['fish_left']))} рыб"
+        if s["time_left"]:
+            left += f"  ≈ {fmt_dur(s['time_left'])} рыбалки"
+        per = per_var.get()
+        if not s["n"]:
+            per_t = f"{per}: опыта пока нет - он считается по двум уловам подряд."
+        else:
+            per_t = (f"{per}: +{fmt_n(s['gain'])} опыта за {s['n']} рыб  ·  за рыбу: последняя +{s['last']}, "
+                     f"в среднем +{fmt_n(s['avg'])} (от {s['min']} до {s['max']})")
+            if s["per_hour"]:
+                per_t += f"  ·  в час +{fmt_n(s['per_hour'], 0)}"
+            if s["ups"]:
+                per_t += f"  ·  новых уровней: {s['ups']}"
+        act = []
+        if s["n_release"]:
+            act.append(f"отпущенная рыба в среднем +{fmt_n(s['avg_release'])} ({s['n_release']} шт.)")
+        if s["n_keep"]:
+            act.append(f"оставленная себе +{fmt_n(s['avg_keep'])} ({s['n_keep']} шт.)")
+        act_t = ("По выбору: " + ", ".join(act) + ".") if act else ""
+        act_t += ("  " if act_t else "") + "Опыт за рыбу - разница со следующим окном улова (с «+1» за «Отпустить» и за плашку)."
+        return head, left, per_t, act_t
+
+    def show_xp():
+        s = xp_now(catch_since())
+        for var, txt in zip((xp_head, xp_left, xp_per, xp_act), xp_text(s)):
+            var.set(txt)
+        xp_bar.configure(maximum=max(1, s["xp_max"]) if s else 1, value=s["xp"] if s else 0)
+
     cov = {"w": None, "focus_t": 0.0, "in_game": False}
 
     def catch_overlay_tick():
@@ -1353,8 +1565,10 @@ def build_fishing_tab(parent):
                 rows, tot = catch_summary(rows_all, t_start, "keep")
                 last = rows_all[-1] if rows_all else None
                 flash = max(0.0, 1 - (now - last[0]) / 8.0) if last else 0.0
+                s = xp_now(t_start)
+                xp = (s["lvl"], s["xp"], s["xp_max"], s["gain"], s["last"]) if s and now - s["t"] < 6 * 3600 else None
                 cov["w"].draw(rows, tot[:2], (last[1] or None, last[2], last[3]) if last and flash > 0 else None,
-                              cfg["catch_side"], flash)
+                              cfg["catch_side"], flash, xp)
             elif cov["w"] is not None:
                 cov["w"].hide()
         except tk.TclError:
@@ -1377,6 +1591,7 @@ def build_fishing_tab(parent):
         if not force and key == (cat_state["ver"], cat_state["per"], cat_state["what"]):
             return
         cat_state.update(ver=key[0], per=key[1], what=key[2])
+        show_xp()
         rows, (n, kg, mx, nokg) = catch_summary(catch_rows(), catch_since(), WHAT[what_var.get()])
         cat_state["rows"] = rows
         ctv.delete(*ctv.get_children())
@@ -1397,6 +1612,7 @@ def build_fishing_tab(parent):
         for name, cnt, s_kg, s_max, s_no in cat_state["rows"]:
             have = cnt - s_no
             lines.append(f"{name}\t{cnt} шт.\t{fmt_kg(s_kg) if have else '-'}\tмакс {fmt_kg(s_max) if have else '-'}")
+        lines += ["", "Опыт рыбалки: " + xp_head.get()] + [v.get() for v in (xp_left, xp_per) if v.get()]
         parent.clipboard_clear()
         parent.clipboard_append("\n".join(lines))
         log("Улов скопирован в буфер обмена")
@@ -1449,6 +1665,7 @@ def build_fishing_tab(parent):
             prog = max(0.0, min(1.0, fi.prog[-1][1] / 520.0))
         return {"active": ctl["active"], "status": ctl["status"], "rate_of": "Поймано",
                 "progress": prog, "held": fi.held if fi is not None else None, "kg": s_.get("kg", 0.0),
+                "xp": xp_now(t_start),
                 "items": [("Забросов", s_.get("casts", 0)), ("Поклёвок", s_.get("bites", 0)),
                           ("Поймано", k + r)]}
     import widgets

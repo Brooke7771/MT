@@ -201,7 +201,9 @@ class FishHero(Hero):
         # правая карточка
         rate = f"{self.rate}"
         kg = d.get("kg") or 0.0
-        extra = [("Забрал, кг", f"{kg:.2f}".replace(".", ",")), ("Поклёвок", str(self.shown("Поклёвок"))),
+        xp = d.get("xp")
+        extra = [("Забрал, кг", f"{kg:.2f}".replace(".", ",")),
+                 ("Опыт", f"+{xp['gain']}") if xp else ("Поклёвок", str(self.shown("Поклёвок"))),
                  ("В час", rate), ("Время", fmt_time(self.sec))]
         self.counter_card(sw + 10, W, "Поймано", extra, (d.get("life") or {}).get("count"))
 
