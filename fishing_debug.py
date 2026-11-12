@@ -10,6 +10,7 @@
 """
 import os
 import sys
+import math
 import time
 import queue
 import threading
@@ -350,6 +351,56 @@ class CatchOverlay:
             self.win.destroy()
         except Exception:
             pass
+
+
+class XpOverlay(CatchOverlay):
+    """Полоска опыта рыбалки поверх игры: уровень, опыт/нужно, за запуск, за рыбу, в час, до уровня.
+    Место - pos: top (сверху по центру, под компасом), left, right, bottom (над полоской заброса)."""
+
+    W = 430
+
+    def draw(self, d, pos="top", flash=0.0):
+        """d - словарь fishing.xp_summary (+ "lvl" может быть None), flash - 1..0 после свежего опыта."""
+        from widgets import _rrect, mix
+        n = lambda v: f"{round(v):,}".replace(",", " ")
+        h = 74
+        sw, sh = self.win.winfo_screenwidth(), self.win.winfo_screenheight()
+        x, y = {"top": ((sw - self.W) // 2, int(sh * 0.062)), "left": (20, int(sh * 0.39)),
+                "right": (sw - self.W - 20, int(sh * 0.62)), "bottom": ((sw - self.W) // 2, int(sh * 0.735))}.get(
+            pos, ((sw - self.W) // 2, int(sh * 0.062)))
+        self.win.geometry(f"{self.W}x{h}+{x}+{y}")
+        cv = self.cv
+        cv.configure(width=self.W, height=h)
+        cv.delete("all")
+        W = self.W
+        _rrect(cv, 0, 0, W - 1, h - 1, 12, fill=self.CARD, outline=mix(self.XP, self.EDGE, 1 - flash))
+        lvl = d.get("lvl")
+        self._t(12, 14, "★", 10, False, self.XP)
+        self._t(30, 14, "Рыбалка" + (f" · {lvl} уровень" if lvl else ""), 10, True)
+        need = d["xp_max"] or 1
+        pct = min(1.0, d["xp"] / need)
+        self._t(W - 12, 14, f"{n(d['xp'])} / {n(d['xp_max'])}  ·  {pct * 100:.0f}%", 10, True, self.TEXT, "e")
+        _rrect(cv, 12, 26, W - 12, 33, 3, fill=self.EDGE, outline="")
+        _rrect(cv, 12, 26, 12 + max(7, (W - 24) * pct), 33, 3, fill=mix("#fff4c2", self.XP, 1 - flash), outline="")
+        parts = [f"+{n(d['gain'])} за запуск"]
+        if d.get("last") is not None:
+            parts.append(f"+{d['last']} за рыбу")
+        if d.get("avg"):
+            parts.append(f"в среднем {d['avg']:.1f}".replace(".", ","))
+        if d.get("per_hour"):
+            parts.append(f"{n(d['per_hour'])}/ч")
+        left = (f"До {lvl + 1} уровня: " if lvl else "До уровня: ") + n(d["left"]) + " опыта"
+        if d.get("fish_left"):
+            left += f"  ≈ {n(math.ceil(d['fish_left']))} рыб"
+        if d.get("time_left"):
+            t = int(d["time_left"])
+            left += f"  ≈ {t // 3600} ч {t % 3600 // 60:02d} мин" if t >= 3600 else f"  ≈ {max(1, t // 60)} мин"
+        self._t(12, 45, "  ·  ".join(parts), 9, False, mix(self.XP, self.TEXT, 1 - flash))
+        self._t(12, 62, left, 9, False, self.MUTED)
+        if not self.shown:
+            self.win.deiconify()
+            self.shown = True
+        self.win.attributes("-topmost", True)
 
 
 class OreOverlay(CatchOverlay):

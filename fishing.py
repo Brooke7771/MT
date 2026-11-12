@@ -41,7 +41,9 @@ def default_config():
             "keep_record": False,            # filter: «Рекордный улов» забирать всегда
             "collect": False,                # сохранять снимок окна улова каждой новой рыбы (для настройки)
             "catch_overlay": True,           # карточка «Улов» поверх игры, пока рыбалка включена
-            "catch_side": "left"}
+            "catch_side": "left",
+            "xp_overlay": True,              # полоска опыта поверх игры, пока рыбалка включена
+            "xp_pos": "top"}                 # top (сверху по центру) | left | right | bottom
 
 
 def load_config():
@@ -454,6 +456,8 @@ def xp_summary(rows, since=0.0):
     cur = xr[-1]
     t_cur = next(r[0] for r, x in reversed(_xp_rows(rows)) if x)
     g = [x for x in xp_gains(rows) if x[0] >= since]
+    # когда стал известен опыт последней рыбы - время следующего окна улова (для подсветки)
+    xr_t = [r[0] for r, x in _xp_rows(rows) if x]
     # время рыбалки за период: промежутки между соседними уловами не длиннее XP_GAP
     ts = [r[0] for r in rows if r[0] >= since]
     busy = sum(b - a for a, b in zip(ts, ts[1:]) if b - a <= XP_GAP)
@@ -461,6 +465,7 @@ def xp_summary(rows, since=0.0):
     s = {"lvl": cur.get("lvl"), "xp": cur["xp"], "xp_max": cur["xp_max"], "left": max(0, cur["xp_max"] - cur["xp"]),
          "t": t_cur, "gain": sum(vals), "n": len(vals), "ups": sum(1 for x in g if x[4]), "busy": busy,
          "last": g[-1][3] if g else None, "last_name": g[-1][1] if g else "",
+         "t_gain": xr_t[-1] if g else None,
          "avg": sum(vals) / len(vals) if vals else None, "min": min(vals) if vals else None,
          "max": max(vals) if vals else None}
     for act in ("keep", "release"):
@@ -1475,6 +1480,21 @@ def build_fishing_tab(parent):
     scb = ttk.Combobox(covr, textvariable=side_var, values=list(SIDES), state="readonly", width=8)
     scb.pack(side="left", padx=8)
     scb.bind("<<ComboboxSelected>>", cov_changed)
+    xovr = ttk.Frame(catf)
+    xovr.grid(row=4, column=0, sticky="w", **pad)
+    xov_var = tk.BooleanVar(value=cfg["xp_overlay"])
+    XPOS = {"сверху по центру": "top", "снизу по центру": "bottom", "слева": "left", "справа": "right"}
+    xpos_var = tk.StringVar(value=next((k for k, v in XPOS.items() if v == cfg["xp_pos"]), "сверху по центру"))
+
+    def xov_changed(e=None):
+        cfg["xp_overlay"] = xov_var.get()
+        cfg["xp_pos"] = XPOS[xpos_var.get()]
+        persist()
+    ttk.Checkbutton(xovr, text="Показывать опыт поверх игры (уровень, за рыбу, до уровня)", variable=xov_var,
+                    command=xov_changed).pack(side="left")
+    xcb = ttk.Combobox(xovr, textvariable=xpos_var, values=list(XPOS), state="readonly", width=17)
+    xcb.pack(side="left", padx=8)
+    xcb.bind("<<ComboboxSelected>>", xov_changed)
     COLS = (("n", "Штук", 60), ("kg", "Всего", 90), ("max", "Самая крупная", 110), ("avg", "Средний вес", 100))
     ctv = ttk.Treeview(catf, columns=[c for c, *_ in COLS], height=8, selectmode="browse")
     ctv.heading("#0", text="Рыба", anchor="w")
@@ -1546,7 +1566,7 @@ def build_fishing_tab(parent):
             var.set(txt)
         xp_bar.configure(maximum=max(1, s["xp_max"]) if s else 1, value=s["xp"] if s else 0)
 
-    cov = {"w": None, "focus_t": 0.0, "in_game": False}
+    cov = {"w": None, "xp": None, "focus_t": 0.0, "in_game": False}
 
     def catch_overlay_tick():
         """Карточка «Улов» поверх игры: только пока рыбалка включена и игра на переднем плане."""
@@ -1556,7 +1576,18 @@ def build_fishing_tab(parent):
                 cov["focus_t"] = now
                 t_ = AF.foreground_title().lower()
                 cov["in_game"] = any(g in t_ for g in ("gta", "rage", "majestic", "grand theft"))
-            want = cfg["catch_overlay"] and ctl["active"] and cov["in_game"]
+            on = ctl["active"] and cov["in_game"]
+            s = xp_now(t_start)
+            s = s if s and now - s["t"] < 6 * 3600 else None
+            if cfg["xp_overlay"] and on and s:
+                if cov["xp"] is None:
+                    import fishing_debug as FD
+                    cov["xp"] = FD.XpOverlay(parent.winfo_toplevel())
+                g_t = s.get("t_gain") or 0
+                cov["xp"].draw(s, cfg["xp_pos"], max(0.0, 1 - (now - g_t) / 6.0) if g_t else 0.0)
+            elif cov["xp"] is not None:
+                cov["xp"].hide()
+            want = cfg["catch_overlay"] and on
             if want:
                 if cov["w"] is None:
                     import fishing_debug as FD
@@ -1565,8 +1596,8 @@ def build_fishing_tab(parent):
                 rows, tot = catch_summary(rows_all, t_start, "keep")
                 last = rows_all[-1] if rows_all else None
                 flash = max(0.0, 1 - (now - last[0]) / 8.0) if last else 0.0
-                s = xp_now(t_start)
-                xp = (s["lvl"], s["xp"], s["xp_max"], s["gain"], s["last"]) if s and now - s["t"] < 6 * 3600 else None
+                # опыт - в карточке улова, только если отдельная полоска опыта выключена
+                xp = (s["lvl"], s["xp"], s["xp_max"], s["gain"], s["last"]) if s and not cfg["xp_overlay"] else None
                 cov["w"].draw(rows, tot[:2], (last[1] or None, last[2], last[3]) if last and flash > 0 else None,
                               cfg["catch_side"], flash, xp)
             elif cov["w"] is not None:
@@ -1874,8 +1905,9 @@ def build_fishing_tab(parent):
             fi.recorder.close()
         if shared.get("overlay") is not None:
             shared["overlay"].destroy()
-        if cov["w"] is not None:
-            cov["w"].destroy()
+        for k in ("w", "xp"):
+            if cov[k] is not None:
+                cov[k].destroy()
 
     show_zone()
     show_filter()
