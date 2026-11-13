@@ -10,7 +10,8 @@
     примерно за 0,3 с; последняя ветка пропадает вместе с мини-игрой;
   - ветки ищутся как отличие от «чистой» мини-игры (эталон в woodcut_assets.npz, собран по записи и
     очищен кадрами сразу после кликов игрока) внутри площадки и бревна; мир позади не смотрим - он разный;
-  - если ветка не убралась с двух кликов у основания, кликаем дальше по ней, потом пропускаем."""
+  - если ветка не убралась, каждый следующий клик - в новое место ветки (толще и не у края бревна),
+    до TRIES попыток; полоски у края бревна (обычно край на фоне леса) - только когда веток не осталось."""
 import os
 import sys
 import json
@@ -33,10 +34,17 @@ HINT = (1590, 990, 1700, 1018)         # «Рубка дерева» над по
 AXIS = ((680, 510), (1232, 330))       # ось бревна, концы
 DIFF, MIN_AREA = 40, 200
 IGNORE = (1222, 332, 1302, 382)        # верх пня (1080p): не ветка
-AIMS = (0.6, 0.85, 0.45, 0.75)         # куда кликать вдоль ветки (доля длины от основания), по попыткам
+AIMS = (0.6, 0.85, 0.4, 0.75, 0.25, 0.95)   # куда кликать вдоль ветки (доля длины от основания), по попыткам
+# запись 20261113_005256 (146 деревьев, 840 кликов): по толстому месту ветки (>= 5 px от края) срабатывает
+# 91% первых кликов, по тонкому кончику - 78%, у самого края бревна (±5 px) - 59%; повтор в то же место
+# почти никогда не помогает -> место клика: поближе к доле AIMS, но толще и не у края, каждая попытка -
+# в новое место (дальше AIM_SPREAD от прошлых)
+AIM_LEN, AIM_THICK, AIM_EDGE, AIM_SPREAD = 0.35, 2.0, 8.0, 14
+EDGE_BAND, EDGE_FRAC = 7, 0.85          # «ветка» почти целиком в полосе ±7 px у края бревна - обычно край на фоне леса
+TRIES, TRIES_EDGE = 8, 4                # сколько попыток на ветку (без ветки мини-игра не закроется) / на полоску у края
 STUMP = (1172, 335, 1300, 400)         # пень (1080p): клик по ветке над ним перехватывает пень
 CLICK_OFF = 14                        # px от края бревна: ближе ветка не кликается
-WAIT_GONE = 0.36                       # сколько ждать после серии кликов, пока ветки исчезнут
+WAIT_GONE = 0.2                        # сколько ждать после серии кликов (ветка пропадает за ~0,1 с)
 
 
 def app_dir():
@@ -103,6 +111,7 @@ class Vision:
         n, lab, st, _ = cv2.connectedComponentsWithStats(logm, 8)
         self.logm = (lab == 1 + int(np.argmax(st[1:, 4]))).astype(np.uint8) if n > 1 else logm
         self.dlog = cv2.distanceTransform((1 - self.logm).astype(np.uint8), cv2.DIST_L2, 3)
+        self.sdl = self.dlog - cv2.distanceTransform(self.logm, cv2.DIST_L2, 3)   # до края бревна (внутри < 0)
         self.touch = cv2.dilate(self.logm, K(15)).astype(bool)
         # мир за площадкой рядом с бревном: тут ищем ветки, торчащие над лесом (эталон тут бесполезен)
         self.world = ~self.over & (self.dlog < 230)
@@ -178,9 +187,15 @@ class Vision:
             okp = ~((xs + x0 >= sx0) & (xs + x0 <= sx1) & (ys + y0 >= sy0) & (ys + y0 <= sy1))
             if okp.sum() < 5:
                 okp[:] = True
-            cost = lambda a: np.where(okp, np.abs(dist - a * L) - 0.8 * np.minimum(th, 3), 1e9)
-            aims = [(int(xs[k]) + x0, int(ys[k]) + y0) for k in (int(np.argmin(cost(a))) for a in AIMS)]
-            out.append({"pt": aims[0], "far": aims[1], "aims": aims,
+            sd = np.abs(self.sdl[ys, xs])
+            edge = bool((sd < EDGE_BAND).mean() > EDGE_FRAC)
+            pen = np.where(okp, AIM_EDGE * (sd < 6) - AIM_THICK * np.minimum(th, 6), 1e9)
+            aims, near = [], np.zeros(len(xs))
+            for a in AIMS:
+                k = int(np.argmin(AIM_LEN * np.abs(dist - a * L) + pen + near))
+                aims.append((int(xs[k]) + x0, int(ys[k]) + y0))
+                near += 40.0 * (np.hypot(xs - xs[k], ys - ys[k]) < AIM_SPREAD)
+            out.append({"pt": aims[0], "far": aims[1], "aims": aims, "edge": edge,
                         "base": (int(xs[base]) + x0, int(ys[base]) + y0), "area": int(st[i][4])})
             if debug:
                 out[-1]["pix"] = (xs + x0, ys + y0)
@@ -419,6 +434,9 @@ def build_wood_tab(parent):
                 stats["state"] = "mini"
                 bs = vis.branches(f)
                 live = [b for b in bs if not near(b["base"], skip)]
+                # полоски у края бревна - только когда настоящих веток не осталось
+                real = [b for b in live if not b["edge"]]
+                live = real or live
                 stats["view"] = {"br": [b["pt"] for b in bs], "skip": list(skip)}
                 ctl["status"] = f"Убираю ветки: осталось {len(live)}"
                 if not cfg["branches"] or not live:
@@ -433,7 +451,7 @@ def build_wood_tab(parent):
                     if t is None:
                         t = [b["base"][0], b["base"][1], 0]
                         tries.append(t)
-                    if t[2] >= 4:
+                    if t[2] >= (TRIES_EDGE if b["edge"] else TRIES):
                         skip.append((t[0], t[1]))
                         log(f"Ветка у {t[0]},{t[1]} не убирается - пропускаю")
                         continue
@@ -444,6 +462,8 @@ def build_wood_tab(parent):
                     inp.move_to(*to_screen(target))
                     time.sleep(0.03)
                     lclick()
+                    # пауза считается от конца клика: при 6/с выходит ~0,28 с между кликами; на записи
+                    # 20261113_005256 клики чаще 0,25 с срабатывали хуже (79% против 88%) - ритм не ускоряем
                     last_hit[0] = time.time()
                     t[2] += 1
                     stats["clicks"] += 1
